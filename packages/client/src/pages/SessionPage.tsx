@@ -1009,6 +1009,7 @@ function SessionPageContent({
             sessionSource={session.source}
             approvalPolicy={session.approvalPolicy}
             sandboxPolicy={session.sandboxPolicy}
+            createdAt={session.createdAt}
             sessionStreamConnected={sessionUpdatesConnected}
             lastSessionEventAt={lastStreamActivityAt}
             onClose={() => setShowProcessInfoModal(false)}

@@ -43,6 +43,7 @@ interface ProcessInfoModalProps {
   sessionSource?: string;
   approvalPolicy?: string;
   sandboxPolicy?: SessionSandboxPolicy;
+  createdAt?: string;
   /** Whether the session-specific SSE stream is connected */
   sessionStreamConnected: boolean;
   /** Timestamp of last SSE activity for this session */
@@ -158,6 +159,7 @@ export function ProcessInfoModal({
   sessionSource,
   approvalPolicy,
   sandboxPolicy,
+  createdAt,
   sessionStreamConnected,
   lastSessionEventAt,
   onClose,
@@ -217,6 +219,9 @@ export function ProcessInfoModal({
         {/* Session Info - always available */}
         <Section title="Session">
           <InfoRow label="Session ID" value={sessionId} mono />
+          {createdAt && (
+            <InfoRow label="Created" value={formatTime(createdAt)} />
+          )}
           <InfoRow label="Provider" value={getProviderDisplay(provider)} />
           <InfoRow label="Model" value={model || "Default"} mono />
           <InfoRow label="Ownership" value={formatKebab(status.owner)} />
