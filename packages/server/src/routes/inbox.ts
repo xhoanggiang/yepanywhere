@@ -12,6 +12,7 @@
 import { getSessionDisplayTitle } from "@yep-anywhere/shared";
 import { Hono } from "hono";
 import type { SessionIndexService } from "../indexes/index.js";
+import { getLogger } from "../logging/logger.js";
 import type { SessionMetadataService } from "../metadata/SessionMetadataService.js";
 import type { NotificationService } from "../notifications/index.js";
 import type { ProjectScanner } from "../projects/scanner.js";
@@ -86,47 +87,60 @@ export function createInboxRoutes(deps: InboxDeps): Hono {
       customTitle?: string;
     }> = [];
 
-    for (const project of projects) {
-      const reader = deps.readerFactory(project);
+    const logger = getLogger();
 
-      // Get sessions using cache if available
-      // SessionIndexService only works with Claude's directory structure
-      let sessions: SessionSummary[];
-      if (deps.sessionIndexService && project.provider === "claude") {
-        sessions = await deps.sessionIndexService.getSessionsWithCache(
-          project.sessionDir,
-          project.id,
-          reader,
-        );
-        // Include sessions from cross-machine merged directories
-        if (project.mergedSessionDirs) {
-          for (const dir of project.mergedSessionDirs) {
-            const mergedReader = new ClaudeSessionReader({ sessionDir: dir });
-            const merged = await deps.sessionIndexService.getSessionsWithCache(
-              dir,
+    // Fetch sessions from all projects in parallel
+    const projectSessionResults = await Promise.all(
+      projects.map(async (project) => {
+        try {
+          const reader = deps.readerFactory(project);
+
+          let sessions: SessionSummary[];
+          if (deps.sessionIndexService) {
+            sessions = await deps.sessionIndexService.getSessionsWithCache(
+              project.sessionDir,
               project.id,
-              mergedReader,
+              reader,
             );
-            sessions = [...sessions, ...merged];
+            // Include sessions from cross-machine merged directories (Claude-specific)
+            if (project.provider === "claude" && project.mergedSessionDirs) {
+              for (const dir of project.mergedSessionDirs) {
+                const mergedReader = new ClaudeSessionReader({
+                  sessionDir: dir,
+                });
+                const merged =
+                  await deps.sessionIndexService.getSessionsWithCache(
+                    dir,
+                    project.id,
+                    mergedReader,
+                  );
+                sessions = [...sessions, ...merged];
+              }
+            }
+          } else {
+            sessions = await reader.listSessions(project.id);
           }
+          return { project, sessions };
+        } catch (err) {
+          logger.warn(
+            { err, projectId: project.id },
+            "Failed to fetch sessions for inbox project",
+          );
+          return { project, sessions: [] as SessionSummary[] };
         }
-      } else {
-        sessions = await reader.listSessions(project.id);
-      }
+      }),
+    );
 
-      // Enrich each session with process state and notification data
+    // Enrich each session with process state and notification data
+    for (const { project, sessions } of projectSessionResults) {
       for (const session of sessions) {
-        // Check if session is archived (from metadata service)
         const metadata = deps.sessionMetadataService?.getMetadata(session.id);
         const isArchived = metadata?.isArchived ?? session.isArchived ?? false;
-
-        // Skip archived sessions entirely - they should never appear in inbox
         if (isArchived) continue;
 
         let pendingInputType: PendingInputType | undefined;
         let activity: AgentActivity | undefined;
 
-        // Get agent activity from supervisor
         const process = deps.supervisor?.getProcessForSession(session.id);
         if (process) {
           const pendingRequest = process.getPendingInputRequest();
@@ -142,7 +156,6 @@ export function createInboxRoutes(deps: InboxDeps): Hono {
           }
         }
 
-        // Get unread status from notification service
         const hasUnread = deps.notificationService
           ? deps.notificationService.hasUnread(session.id, session.updatedAt)
           : undefined;

@@ -337,15 +337,14 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
 
     const reader = deps.readerFactory(project);
     let sessions: SessionSummary[];
-    // SessionIndexService only works with Claude's directory structure
-    if (deps.sessionIndexService && project.provider === "claude") {
+    if (deps.sessionIndexService) {
       sessions = await deps.sessionIndexService.getSessionsWithCache(
         project.sessionDir,
         project.id,
         reader,
       );
-      // Include sessions from cross-machine merged directories
-      if (project.mergedSessionDirs) {
+      // Include sessions from cross-machine merged directories (Claude-specific)
+      if (project.provider === "claude" && project.mergedSessionDirs) {
         for (const dir of project.mergedSessionDirs) {
           const mergedReader = new ClaudeSessionReader({ sessionDir: dir });
           const merged = await deps.sessionIndexService.getSessionsWithCache(

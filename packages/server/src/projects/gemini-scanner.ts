@@ -1,10 +1,12 @@
 /**
  * GeminiSessionScanner - Scans Gemini sessions and groups them by project.
  *
- * Gemini stores sessions at ~/.gemini/tmp/<projectHash>/chats/session-*.json
- * where projectHash is a SHA-256 hash of the working directory.
+ * Gemini stores sessions at ~/.gemini/tmp/<dirName>/chats/session-*.json
+ * where dirName is either a human-readable slug (Gemini CLI ≥ v0.29) or a
+ * SHA-256 hash of the working directory (older versions).
  *
- * We use GeminiProjectMap to resolve project hashes to their original CWDs.
+ * The real projectHash (SHA-256) is inside each session JSON file and is used
+ * to resolve the original CWD via GeminiProjectMap.
  */
 
 import { readFile, readdir, stat } from "node:fs/promises";
@@ -28,7 +30,10 @@ export { GEMINI_DIR, GEMINI_TMP_DIR, hashProjectPath };
 
 interface GeminiSessionInfo {
   id: string;
+  /** SHA-256 hash from inside the session JSON (used for project-map lookups) */
   projectHash: string;
+  /** Actual directory name on disk (may be a slug or a hash) */
+  dirName: string;
   filePath: string;
   startTime: string;
   mtime: number;
@@ -86,6 +91,7 @@ export class GeminiSessionScanner {
         lastActivity: number;
         cwd: string | null;
         projectHash: string;
+        dirName: string;
       }
     >();
 
@@ -105,6 +111,7 @@ export class GeminiSessionScanner {
           lastActivity: session.mtime,
           cwd: cwd ?? null,
           projectHash: session.projectHash,
+          dirName: session.dirName,
         });
       }
     }
@@ -122,7 +129,7 @@ export class GeminiSessionScanner {
         path,
         name,
         sessionCount: data.sessions.length,
-        sessionDir: join(this.sessionsDir, data.projectHash, "chats"),
+        sessionDir: join(this.sessionsDir, data.dirName, "chats"),
         activeOwnedCount: 0,
         activeExternalCount: 0,
         lastActivity: new Date(data.lastActivity).toISOString(),
@@ -191,11 +198,11 @@ export class GeminiSessionScanner {
       return [];
     }
 
-    // Find all project hash directories
-    let projectHashDirs: string[];
+    // Find all project directories (may be slugs or hashes)
+    let projectDirNames: string[];
     try {
       const entries = await readdir(this.sessionsDir, { withFileTypes: true });
-      projectHashDirs = entries
+      projectDirNames = entries
         .filter((e) => e.isDirectory())
         .map((e) => e.name);
     } catch {
@@ -203,12 +210,12 @@ export class GeminiSessionScanner {
       return [];
     }
 
-    // Scan each project hash directory in parallel
+    // Scan each project directory in parallel
     const BATCH_SIZE = 20;
-    for (let i = 0; i < projectHashDirs.length; i += BATCH_SIZE) {
-      const batch = projectHashDirs.slice(i, i + BATCH_SIZE);
+    for (let i = 0; i < projectDirNames.length; i += BATCH_SIZE) {
+      const batch = projectDirNames.slice(i, i + BATCH_SIZE);
       const results = await Promise.all(
-        batch.map((hash) => this.scanProjectHash(hash)),
+        batch.map((dirName) => this.scanProjectDir(dirName)),
       );
       for (const result of results) {
         sessions.push(...result);
@@ -220,13 +227,11 @@ export class GeminiSessionScanner {
   }
 
   /**
-   * Scan sessions for a specific project hash directory.
+   * Scan sessions for a project directory (slug or hash name on disk).
    */
-  private async scanProjectHash(
-    projectHash: string,
-  ): Promise<GeminiSessionInfo[]> {
+  private async scanProjectDir(dirName: string): Promise<GeminiSessionInfo[]> {
     const sessions: GeminiSessionInfo[] = [];
-    const chatsDir = join(this.sessionsDir, projectHash, "chats");
+    const chatsDir = join(this.sessionsDir, dirName, "chats");
 
     try {
       await stat(chatsDir);
@@ -251,7 +256,7 @@ export class GeminiSessionScanner {
 
     // Read session files in parallel
     const results = await Promise.all(
-      files.map((f) => this.readSessionMeta(join(chatsDir, f), projectHash)),
+      files.map((f) => this.readSessionMeta(join(chatsDir, f), dirName)),
     );
 
     for (const result of results) {
@@ -268,7 +273,7 @@ export class GeminiSessionScanner {
    */
   private async readSessionMeta(
     filePath: string,
-    projectHash: string,
+    dirName: string,
   ): Promise<GeminiSessionInfo | null> {
     try {
       const stats = await stat(filePath);
@@ -277,13 +282,10 @@ export class GeminiSessionScanner {
 
       if (!session) return null;
 
-      // Note: Inference from tool calls is no longer needed here as we use the
-      // explicit project map. We could revive it as a fallback if needed,
-      // but simpler is better.
-
       return {
         id: session.sessionId,
-        projectHash,
+        projectHash: session.projectHash,
+        dirName,
         filePath,
         startTime: session.startTime,
         mtime: stats.mtimeMs,

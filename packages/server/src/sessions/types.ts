@@ -95,4 +95,16 @@ export interface ISessionReader {
    * Returns null if the session is not found.
    */
   getSessionFilePath?(sessionId: string): Promise<string | null>;
+
+  /**
+   * Enumerate session files in a directory with their IDs.
+   * Used by SessionIndexService for providers where the session ID
+   * can't be derived from the filename (e.g., Gemini JSON files).
+   *
+   * When not implemented, the index service falls back to JSONL
+   * filename-based enumeration.
+   */
+  listSessionFiles?(
+    sessionDir: string,
+  ): Promise<{ sessionId: string; filePath: string }[]>;
 }

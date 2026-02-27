@@ -1,11 +1,16 @@
 /**
- * SessionIndexService caches session summaries to avoid re-parsing JSONL files.
+ * SessionIndexService caches session summaries to avoid re-parsing session files.
  * Uses mtime/size for cache invalidation - only re-parses when files change.
  *
  * State is persisted to JSON files for durability across server restarts.
  * Each project's session directory gets its own index file.
+ *
+ * Supports any provider whose reader implements ISessionReader. For providers
+ * where session IDs can't be derived from filenames (e.g., Gemini), the reader
+ * must implement the optional `listSessionFiles()` method.
  */
 
+import { createHash } from "node:crypto";
 import type { Stats } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -38,6 +43,8 @@ export interface CachedSessionSummary {
   isEmpty?: boolean;
   /** AI provider for this session */
   provider: ProviderName;
+  /** Model used for this session (e.g. "gemini-2.5-pro") */
+  model?: string;
 }
 
 export interface SessionIndexState {
@@ -151,10 +158,19 @@ export class SessionIndexService implements ISessionIndexService {
 
   /**
    * Get the index file path for a session directory.
-   * Encodes the relative path from projectsDir with %2F for slashes.
+   * For paths inside projectsDir, encodes the relative path with %2F for slashes.
+   * For external paths (e.g., Gemini's ~/.gemini/tmp/), uses a hash-based name.
    */
   getIndexPath(sessionDir: string): string {
     const relative = path.relative(this.projectsDir, sessionDir);
+    if (relative.startsWith("..")) {
+      // Path is outside projectsDir — hash the absolute path
+      const hash = createHash("sha256")
+        .update(sessionDir)
+        .digest("hex")
+        .slice(0, 16);
+      return path.join(this.dataDir, `ext-${hash}.json`);
+    }
     const encoded = relative.replace(/[/\\]/g, "%2F");
     return path.join(this.dataDir, `${encoded}.json`);
   }
@@ -393,6 +409,7 @@ export class SessionIndexService implements ISessionIndexService {
         ownership: { owner: "none" },
         contextUsage: cached.contextUsage,
         provider: cached.provider ?? DEFAULT_PROVIDER,
+        model: cached.model,
       });
     }
 
@@ -419,6 +436,7 @@ export class SessionIndexService implements ISessionIndexService {
       indexedBytes: size,
       fileMtime: mtime,
       provider: summary.provider,
+      model: summary.model,
     };
   }
 
@@ -582,19 +600,30 @@ export class SessionIndexService implements ISessionIndexService {
     let parseCalls = 0;
 
     try {
-      const files = await fs.readdir(sessionDir);
-      const jsonlFiles = files.filter(
-        (f) => f.endsWith(".jsonl") && !f.startsWith("agent-"),
-      );
+      // Enumerate session files — delegate to reader if it supports custom
+      // enumeration (e.g., Gemini JSON where session ID is inside the file),
+      // otherwise use default JSONL filename-based discovery.
+      let sessionFiles: { sessionId: string; filePath: string }[];
+      if (reader.listSessionFiles) {
+        sessionFiles = await reader.listSessionFiles(sessionDir);
+      } else {
+        const files = await fs.readdir(sessionDir);
+        sessionFiles = files
+          .filter((f) => f.endsWith(".jsonl") && !f.startsWith("agent-"))
+          .map((f) => ({
+            sessionId: f.replace(".jsonl", ""),
+            filePath: path.join(sessionDir, f),
+          }));
+      }
 
       const STAT_BATCH = 100;
-      const allStats: (Stats | null)[] = new Array(jsonlFiles.length);
-      for (let b = 0; b < jsonlFiles.length; b += STAT_BATCH) {
-        const end = Math.min(b + STAT_BATCH, jsonlFiles.length);
+      const allStats: (Stats | null)[] = new Array(sessionFiles.length);
+      for (let b = 0; b < sessionFiles.length; b += STAT_BATCH) {
+        const end = Math.min(b + STAT_BATCH, sessionFiles.length);
         const batch = await Promise.all(
-          jsonlFiles
+          sessionFiles
             .slice(b, end)
-            .map((f) => fs.stat(path.join(sessionDir, f)).catch(() => null)),
+            .map((f) => fs.stat(f.filePath).catch(() => null)),
         );
         statCalls += batch.length;
         for (let j = 0; j < batch.length; j++) {
@@ -608,10 +637,10 @@ export class SessionIndexService implements ISessionIndexService {
         size: number;
       }[] = [];
 
-      for (let i = 0; i < jsonlFiles.length; i++) {
-        const file = jsonlFiles[i];
-        if (!file) continue;
-        const sessionId = file.replace(".jsonl", "");
+      for (let i = 0; i < sessionFiles.length; i++) {
+        const entry = sessionFiles[i];
+        if (!entry) continue;
+        const sessionId = entry.sessionId;
         seenSessionIds.add(sessionId);
 
         const stats = allStats[i];
@@ -638,6 +667,7 @@ export class SessionIndexService implements ISessionIndexService {
             ownership: { owner: "none" },
             contextUsage: cached.contextUsage,
             provider: cached.provider ?? DEFAULT_PROVIDER,
+            model: cached.model,
           });
         } else {
           cacheMisses.push({ sessionId, mtime, size });

@@ -248,6 +248,40 @@ export class GeminiSessionReader implements ISessionReader {
   }
 
   /**
+   * Enumerate session files in a directory for SessionIndexService.
+   * Reads each file to extract the sessionId (not derivable from filename).
+   */
+  async listSessionFiles(
+    sessionDir: string,
+  ): Promise<{ sessionId: string; filePath: string }[]> {
+    const results: { sessionId: string; filePath: string }[] = [];
+    try {
+      const entries = await readdir(sessionDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (
+          entry.isFile() &&
+          entry.name.startsWith("session-") &&
+          entry.name.endsWith(".json")
+        ) {
+          const filePath = join(sessionDir, entry.name);
+          try {
+            const content = await readFile(filePath, "utf-8");
+            const session = parseGeminiSessionFile(content);
+            if (session) {
+              results.push({ sessionId: session.sessionId, filePath });
+            }
+          } catch {
+            // Skip unreadable files
+          }
+        }
+      }
+    } catch {
+      // Directory doesn't exist or unreadable
+    }
+    return results;
+  }
+
+  /**
    * Scan the sessions directory and find all session files.
    */
   private async scanSessions(): Promise<GeminiSessionCacheEntry[]> {
