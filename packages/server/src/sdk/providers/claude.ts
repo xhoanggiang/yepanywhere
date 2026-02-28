@@ -1,9 +1,11 @@
+import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   type SDKMessage as AgentSDKMessage,
   type Query,
   type CanUseTool as SDKCanUseTool,
+  type SpawnedProcess,
   query,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { ModelInfo, SlashCommand } from "@yep-anywhere/shared";
@@ -27,6 +29,14 @@ import type {
   AuthStatus,
   StartSessionOptions,
 } from "./types.js";
+
+/**
+ * Use a spawn wrapper to capture the child process reference for liveness checks.
+ * When true, stale detection can distinguish "process died silently" from
+ * "process is busy with a long tool call". Set to false to revert to the
+ * old time-only heuristic if the wrapper causes issues.
+ */
+const USE_SPAWN_WRAPPER = true;
 
 /** Static fallback list of Claude models (used if probe fails) */
 const CLAUDE_MODELS_FALLBACK: ModelInfo[] = [
@@ -280,13 +290,42 @@ export class ClaudeProvider implements AgentProvider {
         }
       : undefined;
 
-    // Create remote spawn function if executor specified
-    const spawnClaudeCodeProcess = options.executor
-      ? createRemoteSpawn({
-          host: options.executor,
-          remoteEnv: options.remoteEnv,
-        })
-      : undefined;
+    // Create spawn function: remote spawn for SSH executors, local wrapper for liveness checks
+    let spawnClaudeCodeProcess:
+      | ((
+          opts: import("@anthropic-ai/claude-agent-sdk").SpawnOptions,
+        ) => SpawnedProcess)
+      | undefined;
+    let capturedProcess: SpawnedProcess | null = null;
+
+    if (options.executor) {
+      spawnClaudeCodeProcess = createRemoteSpawn({
+        host: options.executor,
+        remoteEnv: options.remoteEnv,
+      });
+    } else if (USE_SPAWN_WRAPPER) {
+      // Local spawn wrapper: delegates to child_process.spawn but captures the
+      // SpawnedProcess reference so we can check liveness (exitCode) later.
+      spawnClaudeCodeProcess = (spawnOpts) => {
+        const proc = spawn(spawnOpts.command, spawnOpts.args, {
+          cwd: spawnOpts.cwd,
+          env: spawnOpts.env as NodeJS.ProcessEnv,
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+
+        // Wire up abort signal → SIGTERM, matching remote-spawn behavior
+        const abortHandler = () => {
+          proc.kill("SIGTERM");
+        };
+        spawnOpts.signal.addEventListener("abort", abortHandler);
+        proc.on("exit", () => {
+          spawnOpts.signal.removeEventListener("abort", abortHandler);
+        });
+
+        capturedProcess = proc;
+        return proc;
+      };
+    }
 
     // Create the SDK query with our message generator
     let sdkQuery: Query;
@@ -358,6 +397,13 @@ export class ClaudeProvider implements AgentProvider {
       iterator: wrappedIterator,
       queue,
       abort: () => abortController.abort(),
+      isProcessAlive:
+        USE_SPAWN_WRAPPER && !options.executor
+          ? () =>
+              capturedProcess !== null &&
+              capturedProcess.exitCode === null &&
+              !capturedProcess.killed
+          : undefined,
       setMaxThinkingTokens: (tokens: number | null) =>
         sdkQuery.setMaxThinkingTokens(tokens),
       interrupt: () => sdkQuery.interrupt(),

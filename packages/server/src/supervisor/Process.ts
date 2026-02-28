@@ -62,6 +62,8 @@ export interface ProcessConstructorOptions extends ProcessOptions {
   queue?: MessageQueue;
   /** Abort function from real SDK */
   abortFn?: () => void;
+  /** Check if underlying CLI process is still alive (for stale detection) */
+  isProcessAlive?: () => boolean;
   /** Function to change max thinking tokens at runtime (SDK 0.2.7+) */
   setMaxThinkingTokensFn?: (tokens: number | null) => Promise<void>;
   /** Function to interrupt current turn gracefully (SDK 0.2.7+) */
@@ -162,6 +164,9 @@ export class Process {
   /** Timestamp of last SDK message received (for staleness detection) */
   private _lastMessageTime: Date;
 
+  /** Check if underlying CLI process is still alive (undefined = not available, fall back to time heuristic) */
+  private _isProcessAlive: (() => boolean) | null;
+
   /** Resolved model name from the first assistant message (e.g., "claude-sonnet-4-5-20250929") */
   private _resolvedModel: string | undefined;
 
@@ -206,6 +211,7 @@ export class Process {
     this.supportedModelsFn = options.supportedModelsFn ?? null;
     this.supportedCommandsFn = options.supportedCommandsFn ?? null;
     this.setModelFn = options.setModelFn ?? null;
+    this._isProcessAlive = options.isProcessAlive ?? null;
     this._lastMessageTime = new Date();
 
     // Exit promise resolves when the CLI process fully terminates
@@ -260,6 +266,14 @@ export class Process {
   /** When the last SDK message was received (for staleness detection) */
   get lastMessageTime(): Date {
     return this._lastMessageTime;
+  }
+
+  /**
+   * Check if the underlying CLI process is still alive.
+   * Returns true if alive, false if dead, undefined if liveness check is unavailable.
+   */
+  get isProcessAlive(): boolean | undefined {
+    return this._isProcessAlive?.();
   }
 
   get queueDepth(): number {
@@ -1354,8 +1368,15 @@ export class Process {
   /**
    * Terminate the process with a reason (e.g., staleness detection).
    * Unlike abort(), this records the reason for logging/debugging.
+   * Also calls abortFn to kill the underlying CLI process, preventing
+   * orphaned processes that continue running after Yep stops tracking them.
    */
   terminate(reason: string): void {
+    // Kill the underlying CLI process first (if available), so it doesn't
+    // continue running as an orphan after we unregister from the Supervisor.
+    if (this.abortFn) {
+      this.abortFn();
+    }
     this.markTerminated(reason);
   }
 

@@ -140,6 +140,8 @@ export interface StartSessionResult {
   iterator: AsyncIterableIterator<SDKMessage>;
   queue: MessageQueue;
   abort: () => void;
+  /** Check if the underlying CLI process is still alive (undefined = not available) */
+  isProcessAlive?: () => boolean;
   /**
    * Change max thinking tokens without restarting the session.
    * Pass null to disable thinking mode.

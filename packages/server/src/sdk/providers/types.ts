@@ -73,6 +73,8 @@ export interface AgentSession {
   queue: MessageQueue;
   /** Abort function to cancel the session */
   abort: () => void;
+  /** Check if the underlying CLI process is still alive (undefined = not available) */
+  isProcessAlive?: () => boolean;
   /** Session ID if available immediately (some providers provide later via messages) */
   sessionId?: string;
   /**

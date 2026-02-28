@@ -357,6 +357,7 @@ export class Supervisor {
       iterator,
       queue,
       abort,
+      isProcessAlive,
       setMaxThinkingTokens,
       interrupt,
       supportedModels,
@@ -372,6 +373,7 @@ export class Supervisor {
       idleTimeoutMs: this.idleTimeoutMs,
       queue,
       abortFn: abort,
+      isProcessAlive,
       setMaxThinkingTokensFn: setMaxThinkingTokens,
       interruptFn: interrupt,
       supportedModelsFn: supportedModels,
@@ -454,6 +456,7 @@ export class Supervisor {
       iterator,
       queue,
       abort,
+      isProcessAlive,
       setMaxThinkingTokens,
       interrupt,
       supportedModels,
@@ -468,6 +471,7 @@ export class Supervisor {
       idleTimeoutMs: this.idleTimeoutMs,
       queue,
       abortFn: abort,
+      isProcessAlive,
       setMaxThinkingTokensFn: setMaxThinkingTokens,
       interruptFn: interrupt,
       supportedModelsFn: supportedModels,
@@ -544,6 +548,7 @@ export class Supervisor {
       iterator,
       queue,
       abort,
+      isProcessAlive,
       setMaxThinkingTokens,
       interrupt,
       steer,
@@ -560,6 +565,7 @@ export class Supervisor {
       idleTimeoutMs: this.idleTimeoutMs,
       queue,
       abortFn: abort,
+      isProcessAlive,
       setMaxThinkingTokensFn: setMaxThinkingTokens,
       interruptFn: interrupt,
       steerFn: steer,
@@ -639,6 +645,7 @@ export class Supervisor {
       iterator,
       queue,
       abort,
+      isProcessAlive,
       setMaxThinkingTokens,
       interrupt,
       steer,
@@ -654,6 +661,7 @@ export class Supervisor {
       idleTimeoutMs: this.idleTimeoutMs,
       queue,
       abortFn: abort,
+      isProcessAlive,
       setMaxThinkingTokensFn: setMaxThinkingTokens,
       interruptFn: interrupt,
       steerFn: steer,
@@ -1495,6 +1503,10 @@ export class Supervisor {
    * Terminate processes stuck in "in-turn" with no SDK messages for too long.
    * This catches phantom processes where the underlying Claude process died
    * without the SDK iterator returning done or throwing.
+   *
+   * When process liveness checking is available (via spawn wrapper), we use
+   * it to distinguish "process died silently" from "process is busy with a
+   * long tool call". Only dead processes are terminated.
    */
   private terminateStaleProcesses(): void {
     const now = Date.now();
@@ -1506,19 +1518,47 @@ export class Supervisor {
       const silentMs = now - process.lastMessageTime.getTime();
       if (silentMs < STALE_IN_TURN_THRESHOLD_MS) continue;
 
+      // If we can check process liveness, only terminate actually-dead processes.
+      // A long-running tool call (e.g., CI wait) will be silent but the process
+      // is still alive — don't kill it.
+      const alive = process.isProcessAlive;
+      if (alive === true) {
+        // Process is alive but silent — likely executing a long tool call. Skip.
+        continue;
+      }
+
       const log = getLogger();
-      log.warn(
-        {
-          event: "stale_process_detected",
-          sessionId: process.sessionId,
-          processId: process.id,
-          projectId: process.projectId,
-          silentMs,
-          startedAt: process.startedAt.toISOString(),
-          lastMessageTime: process.lastMessageTime.toISOString(),
-        },
-        `Terminating stale process: ${process.sessionId} (no messages for ${Math.round(silentMs / 1000)}s)`,
-      );
+
+      if (alive === undefined) {
+        // Liveness check unavailable — fall back to time-based heuristic
+        log.warn(
+          {
+            event: "stale_process_detected",
+            sessionId: process.sessionId,
+            processId: process.id,
+            projectId: process.projectId,
+            silentMs,
+            startedAt: process.startedAt.toISOString(),
+            lastMessageTime: process.lastMessageTime.toISOString(),
+            livenessAvailable: false,
+          },
+          `Terminating stale process (no liveness check): ${process.sessionId} (no messages for ${Math.round(silentMs / 1000)}s)`,
+        );
+      } else {
+        // alive === false — process is confirmed dead
+        log.warn(
+          {
+            event: "stale_process_dead",
+            sessionId: process.sessionId,
+            processId: process.id,
+            projectId: process.projectId,
+            silentMs,
+            startedAt: process.startedAt.toISOString(),
+            lastMessageTime: process.lastMessageTime.toISOString(),
+          },
+          `Terminating dead process: ${process.sessionId} (exited, silent for ${Math.round(silentMs / 1000)}s)`,
+        );
+      }
 
       process.terminate(
         `stale: no SDK messages for ${Math.round(silentMs / 1000)}s`,
