@@ -20,7 +20,7 @@ export function EmulatorNavButtons({ dataChannel }: EmulatorNavButtonsProps) {
       <button
         type="button"
         className="emulator-nav-btn"
-        onClick={() => sendKey("BACK")}
+        onClick={() => sendKey("GoBack")}
         disabled={disabled}
         title="Back"
       >
@@ -41,7 +41,7 @@ export function EmulatorNavButtons({ dataChannel }: EmulatorNavButtonsProps) {
       <button
         type="button"
         className="emulator-nav-btn"
-        onClick={() => sendKey("HOME")}
+        onClick={() => sendKey("GoHome")}
         disabled={disabled}
         title="Home"
       >
@@ -62,7 +62,7 @@ export function EmulatorNavButtons({ dataChannel }: EmulatorNavButtonsProps) {
       <button
         type="button"
         className="emulator-nav-btn"
-        onClick={() => sendKey("APP_SWITCH")}
+        onClick={() => sendKey("AppSwitch")}
         disabled={disabled}
         title="Recents"
       >

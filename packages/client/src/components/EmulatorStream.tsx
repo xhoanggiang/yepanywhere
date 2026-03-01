@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 
 interface EmulatorStreamProps {
   /** Remote MediaStream from WebRTC */
@@ -8,8 +8,37 @@ interface EmulatorStreamProps {
 }
 
 /**
- * Video element for emulator stream with touch event capture.
- * Touch coordinates are normalized to 0.0-1.0 and sent via DataChannel.
+ * Compute the actual rendered video rect within the element,
+ * accounting for `object-fit: contain` letterboxing.
+ */
+function getVideoRect(video: HTMLVideoElement): DOMRect {
+  const elem = video.getBoundingClientRect();
+  const videoW = video.videoWidth;
+  const videoH = video.videoHeight;
+
+  // Before video metadata loads, fall back to element rect
+  if (!videoW || !videoH) return elem;
+
+  const scale = Math.min(elem.width / videoW, elem.height / videoH);
+  const renderW = videoW * scale;
+  const renderH = videoH * scale;
+
+  return new DOMRect(
+    elem.left + (elem.width - renderW) / 2,
+    elem.top + (elem.height - renderH) / 2,
+    renderW,
+    renderH,
+  );
+}
+
+/** Clamp a value to [0, 1]. */
+function clamp01(v: number): number {
+  return Math.max(0, Math.min(1, v));
+}
+
+/**
+ * Video element for emulator stream with touch and mouse event capture.
+ * Coordinates are normalized to 0.0-1.0, accounting for object-fit letterboxing.
  */
 export function EmulatorStream({ stream, dataChannel }: EmulatorStreamProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -21,35 +50,137 @@ export function EmulatorStream({ stream, dataChannel }: EmulatorStreamProps) {
     video.srcObject = stream;
   }, [stream]);
 
-  const sendTouchEvent = (
-    action: "down" | "move" | "up",
-    event: React.TouchEvent<HTMLVideoElement>,
-  ) => {
-    if (!dataChannel || dataChannel.readyState !== "open") return;
+  const canSend = useCallback(() => {
+    return dataChannel && dataChannel.readyState === "open";
+  }, [dataChannel]);
 
-    const rect = event.currentTarget.getBoundingClientRect();
-    const touches = Array.from(event.touches).map((touch) => ({
-      x: (touch.clientX - rect.left) / rect.width,
-      y: (touch.clientY - rect.top) / rect.height,
-      pressure: (touch as unknown as { force?: number }).force || 0.5,
-      identifier: touch.identifier,
-    }));
+  const sendTouches = useCallback(
+    (
+      touches: Array<{
+        clientX: number;
+        clientY: number;
+        id: number;
+        pressure: number;
+      }>,
+      video: HTMLVideoElement,
+    ) => {
+      if (!canSend() || !dataChannel) return;
+      const rect = getVideoRect(video);
+      const mapped = touches.map((t) => ({
+        x: clamp01((t.clientX - rect.left) / rect.width),
+        y: clamp01((t.clientY - rect.top) / rect.height),
+        pressure: t.pressure,
+        id: t.id,
+      }));
+      dataChannel.send(JSON.stringify({ type: "touch", touches: mapped }));
+    },
+    [canSend, dataChannel],
+  );
 
-    // For "up" events, touches array is empty — use changedTouches
-    const activeTouches =
-      touches.length > 0
-        ? touches
-        : Array.from(event.changedTouches).map((touch) => ({
-            x: (touch.clientX - rect.left) / rect.width,
-            y: (touch.clientY - rect.top) / rect.height,
-            pressure: 0,
-            identifier: touch.identifier,
-          }));
+  // --- Touch handlers ---
 
-    dataChannel.send(
-      JSON.stringify({ type: "touch", action, touches: activeTouches }),
-    );
-  };
+  const handleTouchStart = useCallback(
+    (e: React.TouchEvent<HTMLVideoElement>) => {
+      e.preventDefault();
+      sendTouches(
+        Array.from(e.touches).map((t) => ({
+          clientX: t.clientX,
+          clientY: t.clientY,
+          id: t.identifier,
+          pressure: (t as unknown as { force?: number }).force || 0.5,
+        })),
+        e.currentTarget,
+      );
+    },
+    [sendTouches],
+  );
+
+  const handleTouchMove = useCallback(
+    (e: React.TouchEvent<HTMLVideoElement>) => {
+      e.preventDefault();
+      sendTouches(
+        Array.from(e.touches).map((t) => ({
+          clientX: t.clientX,
+          clientY: t.clientY,
+          id: t.identifier,
+          pressure: (t as unknown as { force?: number }).force || 0.5,
+        })),
+        e.currentTarget,
+      );
+    },
+    [sendTouches],
+  );
+
+  const handleTouchEnd = useCallback(
+    (e: React.TouchEvent<HTMLVideoElement>) => {
+      e.preventDefault();
+      // On touchend, event.touches is empty — use changedTouches with pressure 0 (release)
+      sendTouches(
+        Array.from(e.changedTouches).map((t) => ({
+          clientX: t.clientX,
+          clientY: t.clientY,
+          id: t.identifier,
+          pressure: 0,
+        })),
+        e.currentTarget,
+      );
+    },
+    [sendTouches],
+  );
+
+  // --- Mouse handlers (desktop fallback) ---
+
+  const mouseDown = useRef(false);
+
+  const handleMouseDown = useCallback(
+    (e: React.MouseEvent<HTMLVideoElement>) => {
+      e.preventDefault();
+      mouseDown.current = true;
+      sendTouches(
+        [{ clientX: e.clientX, clientY: e.clientY, id: 0, pressure: 0.5 }],
+        e.currentTarget,
+      );
+    },
+    [sendTouches],
+  );
+
+  const handleMouseMove = useCallback(
+    (e: React.MouseEvent<HTMLVideoElement>) => {
+      if (!mouseDown.current) return;
+      e.preventDefault();
+      sendTouches(
+        [{ clientX: e.clientX, clientY: e.clientY, id: 0, pressure: 0.5 }],
+        e.currentTarget,
+      );
+    },
+    [sendTouches],
+  );
+
+  const handleMouseUp = useCallback(
+    (e: React.MouseEvent<HTMLVideoElement>) => {
+      if (!mouseDown.current) return;
+      mouseDown.current = false;
+      e.preventDefault();
+      sendTouches(
+        [{ clientX: e.clientX, clientY: e.clientY, id: 0, pressure: 0 }],
+        e.currentTarget,
+      );
+    },
+    [sendTouches],
+  );
+
+  // Reset mouse state if pointer leaves the element
+  const handleMouseLeave = useCallback(
+    (e: React.MouseEvent<HTMLVideoElement>) => {
+      if (!mouseDown.current) return;
+      mouseDown.current = false;
+      sendTouches(
+        [{ clientX: e.clientX, clientY: e.clientY, id: 0, pressure: 0 }],
+        e.currentTarget,
+      );
+    },
+    [sendTouches],
+  );
 
   return (
     <video
@@ -58,18 +189,13 @@ export function EmulatorStream({ stream, dataChannel }: EmulatorStreamProps) {
       autoPlay
       playsInline
       muted
-      onTouchStart={(e) => {
-        e.preventDefault();
-        sendTouchEvent("down", e);
-      }}
-      onTouchMove={(e) => {
-        e.preventDefault();
-        sendTouchEvent("move", e);
-      }}
-      onTouchEnd={(e) => {
-        e.preventDefault();
-        sendTouchEvent("up", e);
-      }}
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUp}
+      onMouseLeave={handleMouseLeave}
     />
   );
 }
