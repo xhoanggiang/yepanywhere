@@ -71,12 +71,38 @@ Environment variables:
 
 Note: Both instances share `~/.claude/projects/` (SDK-managed sessions).
 
-## Browser Control
+## Android Emulator Testing
 
-Browser automation is provided by claw-starter. See `~/code/claw-starter/README.md` for the full CLI reference and workflow patterns.
+Always use the Android emulator to test when it's available. Check with `source ~/.profile && adb devices` and deploy/test on the emulator whenever possible.
 
-- **Server:** `tsx ~/code/claw-starter/lib/browser/server.ts`
-- **CLI:** `tsx ~/code/claw-starter/lib/browser-cli.ts <command>`
+## Browser Control (UI Testing)
+
+Use the claw-starter browser skill at `~/code/claw-starter` to automate browser-based testing of the web UI. This uses Playwright with headless Chromium.
+
+**Start the browser server** (if not already running):
+
+```bash
+cd ~/code/claw-starter && npx tsx lib/browser/server.ts &
+```
+
+**CLI commands** (run from `~/code/claw-starter`):
+
+```bash
+npx tsx lib/browser-cli.ts status              # Check if server is running
+npx tsx lib/browser-cli.ts open <url>           # Open URL in new tab
+npx tsx lib/browser-cli.ts navigate <url>       # Navigate current tab
+npx tsx lib/browser-cli.ts snapshot --efficient  # Read page (accessibility tree)
+npx tsx lib/browser-cli.ts screenshot           # Take screenshot (returns path)
+npx tsx lib/browser-cli.ts click e5             # Click element by ref
+npx tsx lib/browser-cli.ts type e5 "text"       # Type into element
+npx tsx lib/browser-cli.ts evaluate "JS expr"   # Run JS and return result
+npx tsx lib/browser-cli.ts tabs                 # List open tabs
+npx tsx lib/browser-cli.ts close                # Close tab
+```
+
+**Workflow**: snapshot → act (click/type) using element refs → snapshot again to verify.
+
+See `~/code/claw-starter/README.md` for the full CLI reference.
 
 ## After Editing Code
 
