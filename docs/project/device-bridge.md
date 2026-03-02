@@ -98,25 +98,29 @@ adb -s <serial> forward tcp:27184 tcp:27184   # control
 
 APK listens on two TCP ports. No connection to the internet, no permissions.
 
-**Wire protocol (two connections)**
+**Wire protocol (single connection)**
 
-Two connections separate video latency from control latency — a tap doesn't have to wait for an in-flight screenshot response:
+One `adb forward`, one port (27183). A small message framing protocol handles both video and control on the same connection:
 
 ```
-Video conn (port 27183):
-  Handshake (device → sidecar): [width uint16 LE][height uint16 LE]
-  Loop:
-    sidecar → [0x01]                         # request frame
-    device  → [4-byte LE length][JPEG bytes] # JPEG at ~quality 70
+Handshake (device → sidecar on connect):
+  [width uint16 LE][height uint16 LE]
 
-Control conn (port 27184):
-  sidecar → {"cmd":"touch","touches":[{"x":0.5,"y":0.3,"pressure":1.0}]}\n
-  device  → {"ok":true}\n
-  sidecar → {"cmd":"key","key":"back"}\n
-  device  → {"ok":true}\n
+Frame request (sidecar → device):
+  [0x01]
+
+Frame response (device → sidecar):
+  [0x02][4-byte LE JPEG length][JPEG bytes]
+
+Control command (sidecar → device, fire-and-forget, no response):
+  [0x03][4-byte LE JSON length][JSON bytes]
+  e.g. {"cmd":"touch","touches":[{"x":0.5,"y":0.3,"pressure":1.0}]}
+       {"cmd":"key","key":"back"}
 ```
 
-JPEG because `Bitmap.compress(JPEG, 70, stream)` is built-in on Android and the sidecar needs to decode to YUV for x264 anyway — JPEG is smaller than raw RGB888 over the ADB forward tunnel.
+Touch and key commands are fire-and-forget — no ack needed. The device runs a reader goroutine (handles 0x01 frame requests and 0x03 commands) and a writer goroutine (sends 0x02 frames). The sidecar's video and input goroutines share the single connection with a write mutex.
+
+JPEG because `Bitmap.compress(JPEG, 70, stream)` is built-in on Android and the sidecar decodes to YUV for x264 anyway — much smaller than raw RGB888 over the ADB tunnel.
 
 **Go sidecar: `AndroidDevice`**
 
@@ -136,29 +140,78 @@ CI builds and attaches `yep-device-server.apk` to GitHub releases alongside the 
 
 For Chromebooks with developer mode and SSH root access (`chromeroot` in `~/.ssh/config`). Not batteries-included — the user is expected to have SSH tunnels set up manually. No auto-discovery, no auto-deploy from the UI.
 
-**On-device: `daemon.py`**
+**On-device: `daemon.py`** *(lives in `chromeos-testbed`, private repo)*
 
-A thin TCP server wrapping the existing `client.py` logic. All the input and screenshot primitives already exist (`drm_screenshot` via EGL/GBM, `VirtualMouse`, evdev touch/keyboard). The daemon adds:
-- TCP server on ports 27183 (video) and 27184 (control)
-- Frame loop calling `drm_screenshot_jpeg()` at target FPS
-- Same wire protocol as Android
+A thin stdin/stdout binary-framing wrapper around the existing `client.py` logic. No TCP port — not even localhost-only. All the input and screenshot primitives already exist (`drm_screenshot` via EGL/GBM, `VirtualMouse`, evdev touch/keyboard). The daemon adds:
+- Binary framing over stdin/stdout (same protocol as Android)
+- Frame loop calling `drm_screenshot_jpeg()` at target FPS responding to 0x01 requests
+- 0x03 control commands dispatched to existing `client.py` handlers
 
 Deploy manually:
 ```bash
 scp ~/code/chromeos-testbed/daemon.py chromeroot:/mnt/stateful_partition/c2/
-ssh chromeroot "python3 /mnt/stateful_partition/c2/daemon.py &"
-ssh chromeroot -L 27183:localhost:27183 -L 27184:localhost:27184 -N &
 ```
 
-Then add a `ChromeOSDevice` entry in the Yep server config (just a hostname/port pair). The sidecar connects to `localhost:27183/27184` through the tunnel.
+**Go sidecar: `ChromeOSDevice`** *(lives in this repo, `packages/device-bridge/internal/device/`)*
 
-**Go sidecar: `ChromeOSDevice`**
+Runs `ssh chromeroot python3 /mnt/stateful_partition/c2/daemon.py` as a subprocess. The SSH process's stdin/stdout *is* the connection — same framing protocol as Android, just over pipes instead of a TCP socket. Nothing listens on the Chromebook; the SSH session is the transport. The sidecar manages the SSH process lifetime directly.
 
-Same interface as `AndroidDevice`. The `tap`/`mouse_move`/`key` commands map directly to the existing `client.py` command set.
+```go
+cmd := exec.Command("ssh", "chromeroot",
+    "python3 /mnt/stateful_partition/c2/daemon.py")
+// talk the same frame/control protocol over cmd.Stdin + cmd.Stdout
+```
+
+The `tap`/`mouse_move`/`key` control commands map directly to the existing `client.py` handlers. `chromeroot` is read from a `CHROMEOS_HOST` env var (default `chromeroot`).
 
 ---
 
 ## Implementation Phases
+
+### Phase 0 — Baseline tests (write before touching any code)
+
+The E2E test establishes a green baseline for the full streaming stack. Two unit-level tests fill in the gaps below it.
+
+**Already done:**
+- ✅ E2E: `packages/client/e2e/emulator-stream.spec.ts` — full stack regression (sidecar → WebRTC → browser video)
+
+**Still needed:**
+
+1. **Go: binary framing protocol round-trip** (`packages/emulator-bridge/internal/conn/framing_test.go`)
+
+   The framing layer — `[0x01]` frame request, `[0x02][4-byte len][JPEG]` frame response, `[0x03][4-byte len][JSON]` control — is the shared wire protocol that all device types will implement. A bug here silently breaks everything. Test it in isolation with `io.Pipe()` before any device type exists:
+
+   ```go
+   func TestFramingRoundTrip(t *testing.T) {
+       server, client := io.Pipe() // fake device ↔ sidecar connection
+
+       // fake device side: respond to frame request with test JPEG
+       go func() {
+           // read 0x01 frame request
+           // write 0x02 + length + bytes
+       }()
+
+       // sidecar side: send request, read response
+       // assert bytes match
+   }
+   ```
+
+   Write it in `emulator-bridge` now; it moves to `device-bridge` with the rename in Phase 1.
+
+2. **TypeScript: WebSocket message router dispatch** (`packages/server/src/routes/ws-message-router.test.ts`)
+
+   The router at `ws-message-router.ts` dispatches `emulator_stream_start`, `emulator_webrtc_answer`, `emulator_ice_candidate`, `emulator_stream_stop` to `EmulatorBridgeService`. This is currently untested and is exactly what the Phase 1 rename will touch. A simple unit test with a mock service object verifies the routing table is wired correctly:
+
+   ```typescript
+   it("routes emulator_stream_start to bridgeService.startStream()", async () => {
+     const mockBridgeService = { startStream: vi.fn() }
+     // dispatch message → assert mockBridgeService.startStream was called
+   })
+   ```
+
+**Phase 0 completion check:** `pnpm test` (unit tests) + E2E test both pass.
+
+---
 
 ### Phase 1 — Rename (mechanical, no behavior change)
 
@@ -172,25 +225,105 @@ The emulator tab in the UI can still be labeled "Emulators" or "Devices" — tha
 
 **Output:** identical behavior, clean naming.
 
-### Phase 2 — Device interface + Android physical
+**Phase 1 completion check:** `pnpm typecheck && pnpm lint && pnpm test` all pass. Then run the E2E test — this is the primary safety net for the rename.
 
-1. Add `Device` interface in `internal/device/device.go`; make `emulator.Client` implement it (minimal wiring change in `FrameSource` + `SessionManager`)
-2. Write `AndroidDevice.go` — TCP client for video/control connections
-3. Write the Android APK — `app_process` entrypoint, `SurfaceControl` screenshot loop, `InputManager` injection, two TCP listeners
-4. Wire `AndroidDevice` into `SessionManager` and pool; extend `adb devices` discovery to emit both types
-5. Handle APK push + `adb forward` in the sidecar (or Yep server — TBD)
-6. Add APK to CI build matrix
+---
 
-**Output:** physical Android devices stream and accept input over USB.
+### Phase 2 — Device interface + ChromeOS daemon
 
-### Phase 3 — ChromeOS daemon (internal)
+ChromeOS first: `client.py` already has all the primitives, the SSH subprocess approach needs no deployment ceremony, and the Chromebook is always on.
 
-1. Write `daemon.py` in `chromeos-testbed` — TCP server wrapping `client.py`
-2. Write `ChromeOSDevice.go` in `internal/device/`
-3. Add ChromeOS device type to `DeviceInfo` and discovery (manual config, not auto)
-4. Document the manual SSH tunnel setup
+1. Add `Device` interface in `packages/device-bridge/internal/device/device.go`; make `emulator.Client` implement it (minimal wiring change in `FrameSource` + `SessionManager`)
+2. Write `daemon.py` in **`chromeos-testbed` repo** (private) — stdin/stdout binary framing, `drm_screenshot_jpeg` for frames, existing `client.py` handlers for control
+3. Write `ChromeOSDevice.go` in `packages/device-bridge/internal/device/` — launches `ssh $CHROMEOS_HOST python3 daemon.py`, speaks the shared framing protocol over SSH stdin/stdout
+4. Wire `ChromeOSDevice` into `SessionManager` and pool; add `type: "chromeos"` to `DeviceInfo`
+5. Manual config only: `CHROMEOS_HOST` env var (default `chromeroot`); no auto-discovery
 
-**Output:** Chromebook streams via manually configured SSH tunnel.
+**New tests for Phase 2:**
+
+- **Go: `ChromeOSDevice` framing with mock subprocess** — use `io.Pipe()` to fake the SSH stdin/stdout. Send a handshake, a frame request, and a control command; verify the device side handles each correctly. No real SSH, no real Chromebook.
+- **Go: `FrameSource` works with `Device` interface** — a minimal test that `FrameSource` calls `GetFrame()` on a mock `Device` and distributes the result to subscribers, confirming the interface wiring didn't break the existing emulator path.
+
+**Phase 2 completion check:** `go test ./...` in `packages/device-bridge` passes. Then run the E2E test to confirm emulator path still works after the `Device` interface refactor.
+
+---
+
+### Phase 3 — Android physical device
+
+All code lives in this repo.
+
+1. Add `packages/android-device-server/` — Android APK source (`app_process` entrypoint, `SurfaceControl` screenshot loop, `InputManager` injection, single TCP listener on 27183)
+2. Write `AndroidDevice.go` in `packages/device-bridge/internal/device/` — TCP client for the ADB-forwarded connection, same framing protocol
+3. Wire `AndroidDevice` into `SessionManager` and pool; extend `adb devices` discovery to emit both physical and emulator types
+4. Sidecar handles APK push + `adb forward` automatically when a physical device is selected
+5. Add APK build + release artifact to CI alongside sidecar binary
+
+**New tests for Phase 3:**
+
+- **Go: `AndroidDevice` with mock TCP server** — spin up a `net.Listen` TCP server in the test, run `AndroidDevice` against it. Send handshake + a frame response; assert `GetFrame()` returns the correct bytes.
+- **Go: ADB device-list parsing** — unit test that `adb devices` output with a mix of emulator serials and physical serials (e.g. `R3CN90ABCDE`) is correctly classified as `type: "emulator"` vs `type: "android"`.
+- **E2E: physical device variant** (skips if no physical device attached) — same structure as `emulator-stream.spec.ts` but checks `adb devices` for a non-emulator serial instead.
+
+**Phase 3 completion check:** `go test ./...` passes. E2E emulator test still passes (regression). E2E physical device test passes if a device is attached.
+
+---
+
+---
+
+## Regression Test: Emulator Streaming E2E
+
+**Run this after every phase and after any significant change to the sidecar, server emulator routes, WebSocket message handling, or client streaming code.** It is the single test that exercises the entire stack end-to-end.
+
+### What it tests
+
+`packages/client/e2e/emulator-stream.spec.ts` drives a real Playwright browser through the full streaming flow:
+
+1. Navigates to `/emulator?auto`
+2. Waits for the WebRTC connection state to reach `"connected"` (30 s timeout)
+3. Verifies the `<video>` element is visible
+4. Verifies the video has received at least one frame (`readyState >= HAVE_CURRENT_DATA`)
+
+If any link in the chain is broken — sidecar startup, IPC message routing, SDP/ICE signaling, H.264 encoding, or client-side connection state tracking — this test fails.
+
+### Prerequisites
+
+Both must be true or the test **skips automatically** (safe in CI):
+
+1. **Bridge binary is built:**
+   ```bash
+   cd packages/emulator-bridge
+   go build -o bridge ./cmd/bridge/
+   ```
+
+2. **A running Android emulator** is attached (checked via `adb devices`):
+   ```bash
+   source ~/.profile && adb devices   # should show "emulator-5554  device"
+   # if not running:
+   emulator -avd <avd-name> -no-window &
+   ```
+   Available AVD names: `emulator -list-avds`
+
+### Running the test
+
+```bash
+pnpm test:e2e --grep "streams emulator"
+```
+
+Expected output when everything is working:
+```
+✓  e2e/emulator-stream.spec.ts › streams emulator video over WebRTC when ?auto is set (2.0s)
+1 passed
+```
+
+Expected output when prerequisites are missing (e.g. in CI):
+```
+-  e2e/emulator-stream.spec.ts › streams emulator video over WebRTC when ?auto is set
+1 skipped
+```
+
+### Known environment requirement
+
+The test server must run over plain HTTP. If `HTTPS_SELF_SIGNED=true` is set in your shell, `global-setup.ts` explicitly clears it for the test server — you do not need to unset it manually.
 
 ---
 
