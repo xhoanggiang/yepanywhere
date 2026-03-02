@@ -78,10 +78,33 @@ test("streams ChromeOS video over WebRTC when host is configured", async ({
 
   await page.goto(`${baseURL}/emulator`);
 
+  // Fresh E2E temp dirs can show onboarding modal which blocks clicks.
+  const closeOnboarding = page.getByRole("button", { name: "Close" }).first();
+  if (await closeOnboarding.isVisible().catch(() => false)) {
+    await closeOnboarding.click({ force: true });
+  }
+
+  const skipAll = page.getByRole("button", { name: "Skip all" });
+  if (await skipAll.isVisible().catch(() => false)) {
+    await skipAll.click({ force: true });
+  }
+
   const deviceLabel = `ChromeOS (${host})`;
   const row = page.locator(".emulator-list-item", { hasText: deviceLabel });
   await expect(row).toBeVisible({ timeout: 15_000 });
-  await row.getByRole("button", { name: "Connect" }).click();
+  await page.evaluate((label) => {
+    const rows = Array.from(document.querySelectorAll(".emulator-list-item"));
+    const rowEl = rows.find((r) => r.textContent?.includes(label));
+    if (!rowEl) {
+      throw new Error(`device row not found for ${label}`);
+    }
+    const btns = Array.from(rowEl.querySelectorAll("button"));
+    const connectBtn = btns.find((b) => b.textContent?.trim() === "Connect");
+    if (!connectBtn) {
+      throw new Error(`connect button not found for ${label}`);
+    }
+    (connectBtn as HTMLButtonElement).click();
+  }, deviceLabel);
 
   await expect(page.locator(".emulator-connection-state")).toHaveText(
     "connected",

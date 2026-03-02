@@ -43,7 +43,7 @@ func NewChromeOSDevice(host string) (*ChromeOSDevice, error) {
 		host = defaultChromeOSHost
 	}
 
-	cmd := exec.Command("ssh", host, "python3", defaultChromeOSDaemonPath)
+	cmd := exec.Command("ssh", host, "/usr/bin/python3", defaultChromeOSDaemonPath)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("ssh stdout pipe: %w", err)
