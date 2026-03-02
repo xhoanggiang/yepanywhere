@@ -23,6 +23,11 @@ const (
 	defaultAndroidServerRemoteAPK = "/data/local/tmp/yep-device-server.apk"
 	defaultAndroidServerMainClass = "com.yepanywhere.DeviceServer"
 	androidServerAPKEnvVar        = "ANDROID_DEVICE_SERVER_APK"
+	bridgeDataDirEnvVar           = "YEP_ANYWHERE_DATA_DIR"
+	androidConnectTimeout         = 12 * time.Second
+	androidDialAttemptTimeout     = 1500 * time.Millisecond
+	androidHandshakeTimeout       = 2 * time.Second
+	androidRetryDelay             = 200 * time.Millisecond
 )
 
 // AndroidDevice communicates with the on-device server through an adb-forwarded TCP socket.
@@ -83,7 +88,13 @@ func NewAndroidDevice(serial, adbPath string) (*AndroidDevice, error) {
 		return nil, fmt.Errorf("adb forward for %s: %w (%s)", serial, err, strings.TrimSpace(string(out)))
 	}
 
-	conn, err := dialForwardedAndroidSocket(8 * time.Second)
+	conn, width, height, err := connectWithHandshakeRetry(
+		androidConnectTimeout,
+		androidDialAttemptTimeout,
+		androidHandshakeTimeout,
+		androidRetryDelay,
+		dialForwardedAndroidSocket,
+	)
 	if err != nil {
 		_ = exec.Command(adbPath, "-s", serial, "forward", "--remove", forwardSpec).Run()
 		serverCancel()
@@ -100,10 +111,8 @@ func NewAndroidDevice(serial, adbPath string) (*AndroidDevice, error) {
 		rw:           conn,
 		reader:       conn,
 		writer:       conn,
-	}
-	if err := d.readHandshake(); err != nil {
-		_ = d.Close()
-		return nil, err
+		width:        width,
+		height:       height,
 	}
 	return d, nil
 }
@@ -138,6 +147,54 @@ func dialForwardedAndroidSocket(timeout time.Duration) (net.Conn, error) {
 	return nil, lastErr
 }
 
+func connectWithHandshakeRetry(
+	totalTimeout time.Duration,
+	dialTimeout time.Duration,
+	handshakeTimeout time.Duration,
+	retryDelay time.Duration,
+	dialFn func(time.Duration) (net.Conn, error),
+) (net.Conn, int32, int32, error) {
+	deadline := time.Now().Add(totalTimeout)
+	var lastErr error
+
+	for time.Now().Before(deadline) {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+
+		conn, err := dialFn(minDuration(dialTimeout, remaining))
+		if err != nil {
+			lastErr = fmt.Errorf("dial: %w", err)
+			time.Sleep(minDuration(retryDelay, remaining))
+			continue
+		}
+
+		_ = conn.SetReadDeadline(time.Now().Add(handshakeTimeout))
+		width, height, err := readHandshakeDimensions(conn)
+		_ = conn.SetReadDeadline(time.Time{})
+		if err == nil {
+			return conn, width, height, nil
+		}
+
+		lastErr = err
+		_ = conn.Close()
+		time.Sleep(minDuration(retryDelay, remaining))
+	}
+
+	if lastErr == nil {
+		lastErr = fmt.Errorf("timed out waiting for android server")
+	}
+	return nil, 0, 0, fmt.Errorf("read handshake: %w", lastErr)
+}
+
+func minDuration(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 func resolveAndroidServerAPKPath() (string, error) {
 	if envPath := strings.TrimSpace(os.Getenv(androidServerAPKEnvVar)); envPath != "" {
 		if _, err := os.Stat(envPath); err != nil {
@@ -147,6 +204,10 @@ func resolveAndroidServerAPKPath() (string, error) {
 	}
 
 	candidates := make([]string, 0, 6)
+
+	if dataDir := strings.TrimSpace(os.Getenv(bridgeDataDirEnvVar)); dataDir != "" {
+		candidates = append(candidates, filepath.Join(dataDir, "bin", "yep-device-server.apk"))
+	}
 
 	if exe, err := os.Executable(); err == nil {
 		exeDir := filepath.Dir(exe)
@@ -230,13 +291,21 @@ func NewAndroidDeviceWithTransport(
 }
 
 func (d *AndroidDevice) readHandshake() error {
-	var buf [4]byte
-	if _, err := io.ReadFull(d.reader, buf[:]); err != nil {
+	width, height, err := readHandshakeDimensions(d.reader)
+	if err != nil {
 		return fmt.Errorf("read handshake: %w", err)
 	}
-	d.width = int32(binary.LittleEndian.Uint16(buf[:2]))
-	d.height = int32(binary.LittleEndian.Uint16(buf[2:4]))
+	d.width = width
+	d.height = height
 	return nil
+}
+
+func readHandshakeDimensions(reader io.Reader) (int32, int32, error) {
+	var buf [4]byte
+	if _, err := io.ReadFull(reader, buf[:]); err != nil {
+		return 0, 0, err
+	}
+	return int32(binary.LittleEndian.Uint16(buf[:2])), int32(binary.LittleEndian.Uint16(buf[2:4])), nil
 }
 
 // GetFrame requests a frame and decodes the returned JPEG into RGB888.

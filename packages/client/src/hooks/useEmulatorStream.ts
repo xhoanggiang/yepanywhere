@@ -236,77 +236,75 @@ export function useEmulatorStream(): UseEmulatorStreamResult {
       };
 
       // Listen for signaling messages from server
-      const unsub = conn.onDeviceMessage?.(
-        async (msg: DeviceServerMessage) => {
-          if (msg.sessionId !== sessionId) return;
+      const unsub = conn.onDeviceMessage?.(async (msg: DeviceServerMessage) => {
+        if (msg.sessionId !== sessionId) return;
 
-          switch (msg.type) {
-            case "device_webrtc_offer": {
+        switch (msg.type) {
+          case "device_webrtc_offer": {
+            console.log(
+              `${LOG_PREFIX} [${sid}] received SDP offer (${msg.sdp.length} bytes)`,
+            );
+            try {
+              await pc.setRemoteDescription({
+                type: "offer",
+                sdp: msg.sdp,
+              });
+              const answer = await pc.createAnswer();
+              await pc.setLocalDescription(answer);
               console.log(
-                `${LOG_PREFIX} [${sid}] received SDP offer (${msg.sdp.length} bytes)`,
+                `${LOG_PREFIX} [${sid}] sent SDP answer (${(answer.sdp ?? "").length} bytes)`,
+              );
+              conn.sendMessage?.({
+                type: "device_webrtc_answer",
+                sessionId,
+                sdp: answer.sdp ?? "",
+              });
+            } catch (err) {
+              console.error(
+                `${LOG_PREFIX} [${sid}] SDP negotiation failed:`,
+                err,
+              );
+              setConnectionState("failed");
+              setError(
+                `WebRTC negotiation failed: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
+            break;
+          }
+
+          case "device_ice_candidate_event": {
+            if (msg.candidate) {
+              console.log(
+                `${LOG_PREFIX} [${sid}] received remote ICE candidate`,
               );
               try {
-                await pc.setRemoteDescription({
-                  type: "offer",
-                  sdp: msg.sdp,
-                });
-                const answer = await pc.createAnswer();
-                await pc.setLocalDescription(answer);
-                console.log(
-                  `${LOG_PREFIX} [${sid}] sent SDP answer (${(answer.sdp ?? "").length} bytes)`,
-                );
-                conn.sendMessage?.({
-                  type: "device_webrtc_answer",
-                  sessionId,
-                  sdp: answer.sdp ?? "",
-                });
+                await pc.addIceCandidate(msg.candidate);
               } catch (err) {
-                console.error(
-                  `${LOG_PREFIX} [${sid}] SDP negotiation failed:`,
+                console.warn(
+                  `${LOG_PREFIX} [${sid}] failed to add ICE candidate:`,
                   err,
                 );
-                setConnectionState("failed");
-                setError(
-                  `WebRTC negotiation failed: ${err instanceof Error ? err.message : String(err)}`,
-                );
               }
-              break;
-            }
-
-            case "device_ice_candidate_event": {
-              if (msg.candidate) {
-                console.log(
-                  `${LOG_PREFIX} [${sid}] received remote ICE candidate`,
-                );
-                try {
-                  await pc.addIceCandidate(msg.candidate);
-                } catch (err) {
-                  console.warn(
-                    `${LOG_PREFIX} [${sid}] failed to add ICE candidate:`,
-                    err,
-                  );
-                }
-              } else {
-                console.log(
-                  `${LOG_PREFIX} [${sid}] remote ICE gathering complete`,
-                );
-              }
-              break;
-            }
-
-            case "device_session_state": {
+            } else {
               console.log(
-                `${LOG_PREFIX} [${sid}] server session state: ${msg.state}${msg.error ? ` error=${msg.error}` : ""}`,
+                `${LOG_PREFIX} [${sid}] remote ICE gathering complete`,
               );
-              if (msg.state === "failed" || msg.state === "disconnected") {
-                setConnectionState(msg.state);
-                if (msg.error) setError(msg.error);
-              }
-              break;
             }
+            break;
           }
-        },
-      );
+
+          case "device_session_state": {
+            console.log(
+              `${LOG_PREFIX} [${sid}] server session state: ${msg.state}${msg.error ? ` error=${msg.error}` : ""}`,
+            );
+            if (msg.state === "failed" || msg.state === "disconnected") {
+              setConnectionState(msg.state);
+              if (msg.error) setError(msg.error);
+            }
+            break;
+          }
+        }
+      });
       unsubRef.current = unsub ?? null;
 
       // Ensure WebSocket is connected before sending start message

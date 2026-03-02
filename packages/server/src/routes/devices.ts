@@ -12,17 +12,18 @@ interface DeviceRoutesDeps {
  * POST /api/devices/:id/start        - Start a stopped emulator
  * POST /api/devices/:id/stop         - Stop a running emulator
  * GET  /api/devices/:id/screenshot   - Get a JPEG screenshot thumbnail
- * POST /api/devices/bridge/download  - Download the bridge binary from GitHub
+ * POST /api/devices/bridge/download  - Download bridge runtime dependencies from GitHub
  */
 export function createDeviceRoutes(deps: DeviceRoutesDeps): Hono {
   const { deviceBridgeService } = deps;
   const routes = new Hono();
 
-  // POST /api/devices/bridge/download - Download bridge binary
+  // POST /api/devices/bridge/download - Download bridge binary + Android server APK
   routes.post("/bridge/download", async (c) => {
     try {
-      const destPath = await deviceBridgeService.downloadBinary();
-      return c.json({ ok: true, path: destPath });
+      const { binaryPath, apkPath } =
+        await deviceBridgeService.downloadRuntimeDependencies();
+      return c.json({ ok: true, path: binaryPath, binaryPath, apkPath });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error("[DeviceRoutes] POST /bridge/download error:", message);

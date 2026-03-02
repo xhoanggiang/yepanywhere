@@ -21,6 +21,10 @@ const BRIDGE_VERSION = "0.1.0";
 
 /** GitHub repo for downloading bridge binaries. */
 const BRIDGE_REPO = "kzahel/yepanywhere";
+const ANDROID_SERVER_APK_NAME = "yep-device-server.apk";
+const ANDROID_SERVER_APK_ENV_VAR = "ANDROID_DEVICE_SERVER_APK";
+const DATA_DIR_ENV_VAR = "YEP_ANYWHERE_DATA_DIR";
+const USE_APK_FOR_EMULATORS_ENV_VAR = "DEVICE_BRIDGE_USE_APK_FOR_EMULATOR";
 
 /** Sidecar stdout handshake message */
 interface SidecarHandshake {
@@ -137,40 +141,162 @@ export class DeviceBridgeService {
     return path.join(this.dataDir, "bin", name);
   }
 
-  /** Download the bridge binary from GitHub releases. */
-  async downloadBinary(): Promise<string> {
-    const { name } = this.getBinaryInfo();
-    const url = `https://github.com/${BRIDGE_REPO}/releases/download/bridge-v${BRIDGE_VERSION}/${name}`;
-    const destPath = this.getProdBinaryPath();
-    const destDir = path.dirname(destPath);
+  /** Production Android server APK path (where auto-download writes to). */
+  private getProdAndroidServerAPKPath(): string {
+    return path.join(this.dataDir, "bin", ANDROID_SERVER_APK_NAME);
+  }
 
-    // Ensure bin directory exists
+  /** Optional explicit Android server APK path override from env. */
+  private getConfiguredAndroidServerAPKPath(): string | null {
+    const configured = process.env[ANDROID_SERVER_APK_ENV_VAR]?.trim();
+    return configured || null;
+  }
+
+  /** Resolve an existing Android server APK path for sidecar startup. */
+  private findExistingAndroidServerAPKPath(): string | null {
+    const configured = this.getConfiguredAndroidServerAPKPath();
+    if (configured && fs.existsSync(configured)) {
+      return configured;
+    }
+
+    const candidates = [
+      this.getProdAndroidServerAPKPath(),
+      path.resolve(
+        import.meta.dirname,
+        "../../../android-device-server/app/build/outputs/apk/release/yep-device-server.apk",
+      ),
+      path.resolve(
+        process.cwd(),
+        "packages/android-device-server/app/build/outputs/apk/release/yep-device-server.apk",
+      ),
+      path.resolve(
+        process.cwd(),
+        "app/build/outputs/apk/release/yep-device-server.apk",
+      ),
+      path.join(os.homedir(), ".yep-anywhere", "bin", ANDROID_SERVER_APK_NAME),
+    ];
+
+    for (const candidate of candidates) {
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+    }
+
+    return null;
+  }
+
+  private shouldUseAPKForEmulators(): boolean {
+    const value = process.env[USE_APK_FOR_EMULATORS_ENV_VAR]
+      ?.trim()
+      .toLowerCase();
+    return (
+      value === "1" || value === "true" || value === "yes" || value === "on"
+    );
+  }
+
+  private needsAndroidServerAPK(deviceId: string): boolean {
+    const id = deviceId.trim();
+    if (!id) {
+      return false;
+    }
+    if (id.startsWith("android:")) {
+      return true;
+    }
+    if (id === "chromeos" || id.startsWith("chromeos:")) {
+      return false;
+    }
+    if (id.startsWith("avd-")) {
+      return false;
+    }
+    if (id.startsWith("emulator-")) {
+      return this.shouldUseAPKForEmulators();
+    }
+    return true;
+  }
+
+  private async downloadReleaseAsset(
+    name: string,
+    destPath: string,
+    options?: { executable?: boolean; kindLabel?: string },
+  ): Promise<string> {
+    const kindLabel = options?.kindLabel ?? name;
+    const url = `https://github.com/${BRIDGE_REPO}/releases/download/bridge-v${BRIDGE_VERSION}/${name}`;
+    const destDir = path.dirname(destPath);
     fs.mkdirSync(destDir, { recursive: true });
 
-    console.log(`[DeviceBridge] Downloading ${name} from ${url}`);
+    console.log(`[DeviceBridge] Downloading ${kindLabel} from ${url}`);
 
     const response = await fetch(url, { redirect: "follow" });
     if (!response.ok) {
       throw new Error(
-        `Failed to download bridge binary: ${response.status} ${response.statusText}`,
+        `Failed to download ${kindLabel}: ${response.status} ${response.statusText}`,
       );
     }
 
-    // Write to temp file, then rename atomically
     const tmpPath = `${destPath}.tmp`;
     const buffer = Buffer.from(await response.arrayBuffer());
     fs.writeFileSync(tmpPath, buffer);
     fs.renameSync(tmpPath, destPath);
 
-    // Make executable on non-Windows
-    if (os.platform() !== "win32") {
+    if (options?.executable && os.platform() !== "win32") {
       fs.chmodSync(destPath, 0o755);
     }
 
     console.log(
-      `[DeviceBridge] Downloaded ${name} (${(buffer.length / 1024 / 1024).toFixed(1)} MB)`,
+      `[DeviceBridge] Downloaded ${kindLabel} (${(buffer.length / 1024 / 1024).toFixed(1)} MB)`,
     );
     return destPath;
+  }
+
+  /** Download the bridge binary from GitHub releases. */
+  async downloadBinary(): Promise<string> {
+    const { name } = this.getBinaryInfo();
+    const destPath = this.getProdBinaryPath();
+    return this.downloadReleaseAsset(name, destPath, {
+      executable: true,
+      kindLabel: "bridge binary",
+    });
+  }
+
+  /** Download the Android device server APK from GitHub releases. */
+  async downloadAndroidServerAPK(): Promise<string> {
+    return this.downloadReleaseAsset(
+      ANDROID_SERVER_APK_NAME,
+      this.getProdAndroidServerAPKPath(),
+      { kindLabel: "Android device server APK" },
+    );
+  }
+
+  /** Download both runtime dependencies needed for bridge/device streaming. */
+  async downloadRuntimeDependencies(): Promise<{
+    binaryPath: string;
+    apkPath: string;
+  }> {
+    const [binaryPath, apkPath] = await Promise.all([
+      this.downloadBinary(),
+      this.downloadAndroidServerAPK(),
+    ]);
+    return { binaryPath, apkPath };
+  }
+
+  /** Ensure Android server APK exists before starting Android/APK transport sessions. */
+  private async ensureAndroidServerAPK(): Promise<string> {
+    const configured = this.getConfiguredAndroidServerAPKPath();
+    if (configured) {
+      if (!fs.existsSync(configured)) {
+        throw new Error(
+          `${ANDROID_SERVER_APK_ENV_VAR} is set but file does not exist: ${configured}`,
+        );
+      }
+      return configured;
+    }
+
+    const existing = this.findExistingAndroidServerAPKPath();
+    if (existing) {
+      return existing;
+    }
+
+    return this.downloadAndroidServerAPK();
   }
 
   /** Ensure the sidecar is running. Lazy start on first use. */
@@ -255,8 +381,18 @@ export class DeviceBridgeService {
 
       console.log(`[DeviceBridge] Starting sidecar: ${binaryPath}`);
 
+      const sidecarEnv: NodeJS.ProcessEnv = {
+        ...process.env,
+        [DATA_DIR_ENV_VAR]: this.dataDir,
+      };
+      const apkPath = this.findExistingAndroidServerAPKPath();
+      if (apkPath) {
+        sidecarEnv[ANDROID_SERVER_APK_ENV_VAR] = apkPath;
+      }
+
       const child = spawn(binaryPath, ["--ipc", "--adb-path", this.adbPath], {
         stdio: ["pipe", "pipe", "pipe"],
+        env: sidecarEnv,
       });
 
       this.process = child;
@@ -455,6 +591,9 @@ export class DeviceBridgeService {
 
   /** Start streaming a device to a client. */
   async startStream(msg: DeviceStreamStart, send: ClientSendFn): Promise<void> {
+    if (this.needsAndroidServerAPK(msg.deviceId)) {
+      await this.ensureAndroidServerAPK();
+    }
     await this.ensureStarted();
     this.registerClientSender(msg.sessionId, send);
 

@@ -258,6 +258,11 @@ All code lives in this repo.
 4. Sidecar handles APK push + `adb forward` automatically when a physical device is selected
 5. Add APK build + release artifact to CI alongside sidecar binary
 
+**Phase 3 progress (2026-03-02):**
+- ✅ `bridge-ci.yml` now builds/releases `device-bridge-*` binaries and `yep-device-server.apk`
+- ✅ Server download endpoint now pulls both artifacts (`POST /api/devices/bridge/download`)
+- ✅ `DeviceBridgeService.startStream()` auto-ensures APK availability for Android/APK transport sessions
+
 **New tests for Phase 3:**
 
 - **Go: `AndroidDevice` with mock TCP server** — spin up a `net.Listen` TCP server in the test, run `AndroidDevice` against it. Send handshake + a frame response; assert `GetFrame()` returns the correct bytes.
@@ -265,6 +270,27 @@ All code lives in this repo.
 - **E2E: physical device variant** (skips if no physical device attached) — same structure as `emulator-stream.spec.ts` but checks `adb devices` for a non-emulator serial instead.
 
 **Phase 3 completion check:** `go test ./...` passes. E2E emulator test still passes (regression). E2E physical device test passes if a device is attached.
+
+---
+
+### Phase 4 — iOS simulator
+
+See **[device-bridge-ios.md](device-bridge-ios.md)** for the full design.
+
+A small Swift CLI (`ios-sim-server`) that accesses the simulator's framebuffer via IOSurface (private `SimulatorKit` framework) and injects touch/key input via IndigoHID. Speaks the same binary framing protocol over stdin/stdout — identical pattern to ChromeOS `daemon.py`. The Go sidecar launches it as a subprocess, same as `ChromeOSDevice`.
+
+1. Add `packages/ios-sim-server/` — Swift Package Manager CLI using private CoreSimulator/SimulatorKit frameworks for IOSurface frame capture + IndigoHID input injection
+2. Write `IOSSimulatorDevice.go` in `packages/device-bridge/internal/device/` — subprocess management + stdin/stdout framing, mirrors `ChromeOSDevice`
+3. Add iOS simulator discovery via `xcrun simctl list devices booted -j`; report as `type: "ios-simulator"` in `DeviceInfo`
+4. Binary built from source on first use (`swift build -c release`) since private frameworks are Xcode-version-specific
+
+**New tests for Phase 4:**
+
+- **Go: `IOSSimulatorDevice` with mock subprocess** — `io.Pipe()` fake stdin/stdout, same pattern as ChromeOS device tests
+- **Go: simctl device-list JSON parsing** — unit test for booted simulator discovery
+- **E2E: iOS simulator streaming** (skips if no booted simulator) — same structure as `emulator-stream.spec.ts`
+
+**Phase 4 completion check:** `go test ./...` passes. All prior E2E tests still pass (regression). iOS simulator E2E passes if a simulator is booted.
 
 ---
 

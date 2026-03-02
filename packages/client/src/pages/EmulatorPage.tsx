@@ -148,7 +148,10 @@ function DownloadPrompt({ onDownloaded }: { onDownloaded: () => void }) {
 
   return (
     <div className="emulator-download-prompt">
-      <p>Emulator streaming requires the emulator bridge binary (~17 MB).</p>
+      <p>
+        Device streaming requires bridge runtime downloads (sidecar binary +
+        Android server APK).
+      </p>
       {error && <div className="emulator-error">{error}</div>}
       <button
         type="button"

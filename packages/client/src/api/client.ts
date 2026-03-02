@@ -936,10 +936,13 @@ export const api = {
     }),
 
   downloadEmulatorBridge: () =>
-    fetchJSON<{ ok: boolean; path?: string; error?: string }>(
-      "/devices/bridge/download",
-      { method: "POST" },
-    ),
+    fetchJSON<{
+      ok: boolean;
+      path?: string;
+      binaryPath?: string;
+      apkPath?: string;
+      error?: string;
+    }>("/devices/bridge/download", { method: "POST" }),
 };
 
 /** Result of testing an SSH connection to a remote executor */

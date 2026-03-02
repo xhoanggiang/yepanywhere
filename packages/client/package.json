@@ -13,6 +13,7 @@
     "test": "vitest run",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
+    "test:e2e:android": "playwright test --grep \"streams physical Android\"",
     "test:e2e:emulator:apk": "DEVICE_BRIDGE_USE_APK_FOR_EMULATOR=true ANDROID_DEVICE_SERVER_APK=${ANDROID_DEVICE_SERVER_APK:-../android-device-server/app/build/outputs/apk/release/yep-device-server.apk} playwright test --grep \"APK transport override\"",
     "test:e2e:chromeos": "CHROMEOS_HOST=${CHROMEOS_HOST:-chromeroot} playwright test --grep \"streams ChromeOS\""
   },

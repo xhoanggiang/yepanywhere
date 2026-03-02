@@ -56,3 +56,6 @@ packages/client/dist-remote
 packages/client/dist-stable
 packages/server/client-dist/
 packages/server/bundled/
+
+# Reference repos (cloned for source reading)
+references/

@@ -477,7 +477,9 @@ async function startServer() {
       );
     }
   } else {
-    console.log("[DeviceBridge] ADB not found, device bridge streaming disabled");
+    console.log(
+      "[DeviceBridge] ADB not found, device bridge streaming disabled",
+    );
   }
 
   // Create the app first (without WebSocket support initially)

@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -114,5 +116,69 @@ func TestAndroidDeviceWithMockTCPServer(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for mock server goroutine")
+	}
+}
+
+func TestResolveAndroidServerAPKPathUsesBridgeDataDirEnv(t *testing.T) {
+	tmpDir := t.TempDir()
+	apkPath := filepath.Join(tmpDir, "bin", "yep-device-server.apk")
+	if err := os.MkdirAll(filepath.Dir(apkPath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(apkPath, []byte("apk"), 0o644); err != nil {
+		t.Fatalf("write apk: %v", err)
+	}
+
+	t.Setenv(androidServerAPKEnvVar, "")
+	t.Setenv(bridgeDataDirEnvVar, tmpDir)
+
+	resolved, err := resolveAndroidServerAPKPath()
+	if err != nil {
+		t.Fatalf("resolve apk path: %v", err)
+	}
+	if resolved != apkPath {
+		t.Fatalf("expected %s, got %s", apkPath, resolved)
+	}
+}
+
+func TestConnectWithHandshakeRetryRecoversAfterInitialEOF(t *testing.T) {
+	attempts := 0
+	dialFn := func(_ time.Duration) (net.Conn, error) {
+		attempts++
+		client, server := net.Pipe()
+
+		switch attempts {
+		case 1:
+			_ = server.Close()
+		default:
+			go func() {
+				defer server.Close()
+				var handshake [4]byte
+				binary.LittleEndian.PutUint16(handshake[:2], 1080)
+				binary.LittleEndian.PutUint16(handshake[2:], 2340)
+				_, _ = server.Write(handshake[:])
+			}()
+		}
+
+		return client, nil
+	}
+
+	conn, width, height, err := connectWithHandshakeRetry(
+		2*time.Second,
+		200*time.Millisecond,
+		500*time.Millisecond,
+		10*time.Millisecond,
+		dialFn,
+	)
+	if err != nil {
+		t.Fatalf("connectWithHandshakeRetry: %v", err)
+	}
+	defer conn.Close()
+
+	if attempts < 2 {
+		t.Fatalf("expected at least 2 attempts, got %d", attempts)
+	}
+	if width != 1080 || height != 2340 {
+		t.Fatalf("unexpected handshake dimensions: %dx%d", width, height)
 	}
 }
