@@ -580,9 +580,7 @@ export function createApp(options: AppOptions): AppResult {
               options.remoteSessionService?.setDiskPersistenceEnabled(enabled)
           : undefined,
         onOllamaUrlChanged: (url) => {
-          if (url) {
-            ClaudeOllamaProvider.setOllamaUrl(url);
-          }
+          ClaudeOllamaProvider.setOllamaUrl(url);
         },
         onOllamaSystemPromptChanged: (prompt) => {
           ClaudeOllamaProvider.setSystemPrompt(prompt);

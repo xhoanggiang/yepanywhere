@@ -87,6 +87,9 @@ export class ClaudeOllamaProvider extends ClaudeProvider {
   /** Configurable Ollama URL. Defaults to OLLAMA_URL env or localhost:11434. */
   private static ollamaUrl = process.env.OLLAMA_URL || DEFAULT_OLLAMA_URL;
 
+  /** Whether the URL was explicitly configured (skip detection ping). */
+  private static urlExplicitlyConfigured = !!process.env.OLLAMA_URL;
+
   /** Custom system prompt override (undefined = use default minimal prompt). */
   private static customSystemPrompt: string | undefined;
 
@@ -96,8 +99,10 @@ export class ClaudeOllamaProvider extends ClaudeProvider {
   /**
    * Update the Ollama URL at runtime (called from settings route).
    */
-  static setOllamaUrl(url: string): void {
-    ClaudeOllamaProvider.ollamaUrl = url;
+  static setOllamaUrl(url: string | undefined): void {
+    ClaudeOllamaProvider.ollamaUrl = url || DEFAULT_OLLAMA_URL;
+    ClaudeOllamaProvider.urlExplicitlyConfigured =
+      !!url && url !== DEFAULT_OLLAMA_URL;
   }
 
   /**
@@ -123,8 +128,12 @@ export class ClaudeOllamaProvider extends ClaudeProvider {
 
   /**
    * Check if Ollama is reachable by pinging its API.
+   * If the user explicitly configured a URL, skip detection and assume available.
    */
   override async isInstalled(): Promise<boolean> {
+    if (ClaudeOllamaProvider.urlExplicitlyConfigured) {
+      return true;
+    }
     try {
       const response = await fetch(
         `${ClaudeOllamaProvider.ollamaUrl}/api/tags`,
