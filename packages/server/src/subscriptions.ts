@@ -199,7 +199,13 @@ export function createSessionSubscription(
 
   // Replay buffered messages for late-joining clients
   for (const message of process.getMessageHistory()) {
-    emit("message", markSubagent(message));
+    emit(
+      "message",
+      markSubagent({
+        ...message,
+        isReplay: true,
+      }),
+    );
   }
 
   // Catch-up: send accumulated streaming text as pending HTML

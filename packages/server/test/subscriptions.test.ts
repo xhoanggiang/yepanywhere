@@ -147,6 +147,12 @@ describe("createSessionSubscription", () => {
 
     const messageEvents = events.filter(([type]) => type === "message");
     expect(messageEvents).toHaveLength(2);
+    expect(
+      messageEvents.every(
+        ([, data]) =>
+          (data as { isReplay?: boolean }).isReplay === true,
+      ),
+    ).toBe(true);
   });
 
   it("forwards state-change events", async () => {

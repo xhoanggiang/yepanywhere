@@ -246,6 +246,14 @@ function hasEquivalentJsonlMessage(
   return false;
 }
 
+function getMessageTimestampMs(message: Message): number | null {
+  if (typeof message.timestamp !== "string") {
+    return null;
+  }
+  const ms = Date.parse(message.timestamp);
+  return Number.isFinite(ms) ? ms : null;
+}
+
 /**
  * Hook for managing session messages with stream buffering.
  *
@@ -285,6 +293,23 @@ export function useSessionMessages(
 
   // Track last message ID for incremental fetching
   const lastMessageIdRef = useRef<string | undefined>(undefined);
+  // Highest timestamp observed from persisted JSONL messages.
+  // Used to suppress startup replay events that are already on disk.
+  const maxPersistedTimestampMsRef = useRef<number>(Number.NEGATIVE_INFINITY);
+
+  const updatePersistedTimestampWatermark = useCallback(
+    (persistedMessages: Message[]) => {
+      let maxMs = maxPersistedTimestampMsRef.current;
+      for (const message of persistedMessages) {
+        const ts = getMessageTimestampMs(message);
+        if (ts !== null && ts > maxMs) {
+          maxMs = ts;
+        }
+      }
+      maxPersistedTimestampMsRef.current = maxMs;
+    },
+    [],
+  );
 
   // Update lastMessageIdRef when messages change
   useEffect(() => {
@@ -300,10 +325,22 @@ export function useSessionMessages(
   const processStreamMessage = useCallback(
     (incoming: Message, fromBufferedReplay = false) => {
       const provider = providerRef.current;
+      const isReplay = incoming.isReplay === true;
       const shouldApplyReplayDedupe =
-        fromBufferedReplay && isCodexProvider(provider);
+        (fromBufferedReplay || isReplay) && isCodexProvider(provider);
+      const incomingTimestampMs = getMessageTimestampMs(incoming);
+      const isPersistedReplay =
+        isReplay &&
+        incomingTimestampMs !== null &&
+        incomingTimestampMs <= maxPersistedTimestampMsRef.current;
 
       setMessages((prev) => {
+        // Replay history from the stream should not re-add messages that are
+        // already persisted and loaded from JSONL.
+        if (isPersistedReplay) {
+          return prev;
+        }
+
         if (shouldApplyReplayDedupe) {
           if (isEmptyAssistantContent(incoming)) {
             return prev;
@@ -362,6 +399,7 @@ export function useSessionMessages(
   useEffect(() => {
     initialLoadCompleteRef.current = false;
     streamBufferRef.current = [];
+    maxPersistedTimestampMsRef.current = Number.NEGATIVE_INFINITY;
     setLoading(true);
     setAgentContent({});
 
@@ -377,6 +415,7 @@ export function useSessionMessages(
           ...m,
           _source: "jsonl" as const,
         }));
+        updatePersistedTimestampWatermark(taggedMessages);
         setMessages(taggedMessages);
 
         // Update lastMessageIdRef synchronously to avoid race condition:
@@ -406,7 +445,14 @@ export function useSessionMessages(
         setLoading(false);
         onLoadError?.(err);
       });
-  }, [projectId, sessionId, onLoadComplete, onLoadError, flushBuffer]);
+  }, [
+    projectId,
+    sessionId,
+    onLoadComplete,
+    onLoadError,
+    flushBuffer,
+    updatePersistedTimestampWatermark,
+  ]);
 
   // Handle streaming content updates (from useStreamingContent)
   const handleStreamingUpdate = useCallback(
@@ -507,6 +553,7 @@ export function useSessionMessages(
         lastMessageIdRef.current,
       );
       if (data.messages.length > 0) {
+        updatePersistedTimestampWatermark(data.messages);
         setMessages((prev) => {
           const result = mergeJSONLMessages(prev, data.messages, {
             skipDagOrdering: !getProvider(data.session.provider).capabilities
@@ -525,7 +572,7 @@ export function useSessionMessages(
     } catch {
       // Silent fail for incremental updates
     }
-  }, [projectId, sessionId]);
+  }, [projectId, sessionId, updatePersistedTimestampWatermark]);
 
   // Load older messages (previous chunk before the current truncation point)
   const loadOlderMessages = useCallback(async () => {
@@ -543,6 +590,7 @@ export function useSessionMessages(
           ...m,
           _source: "jsonl" as const,
         }));
+        updatePersistedTimestampWatermark(taggedOlder);
         return [...taggedOlder, ...prev];
       });
       setPagination(data.pagination);
@@ -551,7 +599,7 @@ export function useSessionMessages(
     } finally {
       setLoadingOlder(false);
     }
-  }, [projectId, sessionId, pagination]);
+  }, [projectId, sessionId, pagination, updatePersistedTimestampWatermark]);
 
   // Fetch session metadata only
   const fetchSessionMetadata = useCallback(async () => {
