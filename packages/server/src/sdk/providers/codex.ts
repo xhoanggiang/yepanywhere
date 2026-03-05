@@ -1566,6 +1566,43 @@ export class CodexProvider implements AgentProvider {
         );
       }
 
+      case "account/rateLimits/updated": {
+        const params = notification.params as
+          | Record<string, unknown>
+          | undefined;
+        const rateLimits = params?.rateLimits as
+          | Record<string, unknown>
+          | undefined;
+        if (rateLimits) {
+          const credits = rateLimits.credits as
+            | Record<string, unknown>
+            | undefined;
+          const primary = rateLimits.primary as
+            | Record<string, unknown>
+            | undefined;
+          const isExhausted =
+            (credits && credits.hasCredits === false) ||
+            (primary &&
+              typeof primary.usedPercent === "number" &&
+              primary.usedPercent >= 100);
+          if (isExhausted) {
+            const resetsAt = primary?.resetsAt;
+            const resetMsg =
+              typeof resetsAt === "number"
+                ? ` Resets at ${new Date(resetsAt * 1000).toISOString()}.`
+                : "";
+            return [
+              {
+                type: "error",
+                session_id: sessionId,
+                error: `Rate limit exceeded.${resetMsg}`,
+              } as SDKMessage,
+            ];
+          }
+        }
+        return [];
+      }
+
       default:
         return [];
     }
