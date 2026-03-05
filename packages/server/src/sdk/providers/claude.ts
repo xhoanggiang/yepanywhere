@@ -482,7 +482,7 @@ export class ClaudeProvider implements AgentProvider {
         // Log raw SDK message for analysis (if LOG_SDK_MESSAGES=true)
         sessionId =
           (message as { session_id?: string }).session_id ?? sessionId;
-        logSDKMessage(sessionId, message);
+        logSDKMessage(sessionId, message, { provider: "claude" });
 
         const converted = this.convertMessage(message);
         yield converted;

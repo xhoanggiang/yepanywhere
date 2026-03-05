@@ -9,6 +9,7 @@ import { type ChildProcess, execSync, spawn } from "node:child_process";
 import type { ModelInfo } from "@yep-anywhere/shared";
 import { getLogger } from "../../logging/logger.js";
 import { whichCommand } from "../cli-detection.js";
+import { logSDKMessage } from "../messageLogger.js";
 import { MessageQueue } from "../messageQueue.js";
 import type { SDKMessage, UserMessage } from "../types.js";
 import type { ToolApprovalResult } from "../types.js";
@@ -980,6 +981,14 @@ export class CodexProvider implements AgentProvider {
 
     let sessionId = options.resumeSessionId ?? "";
     const usageByTurnId = new Map<string, TokenUsageSnapshot>();
+    const logMessage = (message: SDKMessage): SDKMessage => {
+      const messageSessionId =
+        typeof (message as { session_id?: unknown }).session_id === "string"
+          ? ((message as { session_id: string }).session_id ?? "unknown")
+          : sessionId || "unknown";
+      logSDKMessage(messageSessionId, message, { provider: "codex" });
+      return message;
+    };
 
     appServer.setServerRequestHandler(async (request) => {
       return await this.handleServerRequestApproval(request, options, signal);
@@ -1044,12 +1053,12 @@ export class CodexProvider implements AgentProvider {
       );
 
       // Emit init immediately with the real session ID.
-      yield {
+      yield logMessage({
         type: "system",
         subtype: "init",
         session_id: sessionId,
         cwd: options.cwd,
-      } as SDKMessage;
+      } as SDKMessage);
 
       const messageGen = queue.generator();
       let isFirstMessage = !options.resumeSessionId;
@@ -1073,7 +1082,7 @@ export class CodexProvider implements AgentProvider {
         }
 
         // Emit user message with UUID from queue to enable deduplication.
-        yield {
+        yield logMessage({
           type: "user",
           uuid: message.uuid,
           session_id: sessionId,
@@ -1081,7 +1090,7 @@ export class CodexProvider implements AgentProvider {
             role: "user",
             content: userPrompt,
           },
-        } as SDKMessage;
+        } as SDKMessage);
 
         const turnStartParams: TurnStartParams = {
           threadId: sessionId,
@@ -1125,7 +1134,7 @@ export class CodexProvider implements AgentProvider {
             usageByTurnId,
           );
           for (const msg of messages) {
-            yield msg;
+            yield logMessage(msg);
           }
 
           if (this.isTurnTerminalNotification(notification, activeTurnId)) {
@@ -1143,36 +1152,36 @@ export class CodexProvider implements AgentProvider {
           turnResult.turn.status === "failed" &&
           turnResult.turn.error?.message
         ) {
-          yield {
+          yield logMessage({
             type: "error",
             session_id: sessionId,
             error: turnResult.turn.error.message,
-          } as SDKMessage;
+          } as SDKMessage);
         }
 
-        yield {
+        yield logMessage({
           type: "result",
           session_id: sessionId,
-        } as SDKMessage;
+        } as SDKMessage);
       }
     } catch (error) {
       log.error({ error }, "Error in codex app-server session");
       if (!signal.aborted) {
-        yield {
+        yield logMessage({
           type: "error",
           session_id: sessionId,
           error: error instanceof Error ? error.message : String(error),
-        } as SDKMessage;
+        } as SDKMessage);
       }
     } finally {
       runtimeState.activeTurnId = null;
       appServer.close();
     }
 
-    yield {
+    yield logMessage({
       type: "result",
       session_id: sessionId,
-    } as SDKMessage;
+    } as SDKMessage);
   }
 
   private isTurnTerminalNotification(

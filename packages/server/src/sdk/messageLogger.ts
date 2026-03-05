@@ -1,6 +1,5 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { SDKMessage as AgentSDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { loadConfig } from "../config.js";
 
 /**
@@ -44,14 +43,30 @@ export function initMessageLogger(): void {
  */
 export function logSDKMessage(
   sessionId: string,
-  message: AgentSDKMessage,
+  message: unknown,
+  options?: {
+    provider?: string;
+  },
 ): void {
   if (!enabled || !writeStream) return;
 
-  logRaw({
+  const base = {
     _ts: Date.now(),
     _sid: sessionId,
-    ...message,
+    ...(options?.provider ? { _provider: options.provider } : {}),
+  };
+
+  if (message && typeof message === "object" && !Array.isArray(message)) {
+    logRaw({
+      ...base,
+      ...(message as Record<string, unknown>),
+    });
+    return;
+  }
+
+  logRaw({
+    ...base,
+    _message: message,
   });
 }
 
