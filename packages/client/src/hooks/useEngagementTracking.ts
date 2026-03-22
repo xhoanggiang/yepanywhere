@@ -15,11 +15,11 @@ import { api } from "../api/client";
  *
  * Important: We use two different timestamps:
  * - activityAt: Triggers the mark-seen action (includes SSE streaming activity)
- * - updatedAt: The timestamp we record (file mtime, used by hasUnread comparison)
+ * - updatedAt: The timestamp we send to mark-seen (file mtime)
  *
- * This separation prevents a race condition where SSE timestamps (client clock)
- * could be ahead of file mtime (server disk write time), causing sessions to
- * never become unread again.
+ * The server takes max(provided timestamp, server now) when recording lastSeen,
+ * so late file writes (e.g., tool results flushed after a process stops) that
+ * bump mtime won't cause false unread notifications.
  *
  * Debounces API calls to avoid excessive writes.
  */
