@@ -51,6 +51,24 @@ export interface DagResult {
 const CONVERSATION_TYPES = new Set(["user", "assistant"]);
 
 /**
+ * Collect UUIDs of all progress messages.
+ * Progress messages (subagent status updates) form long chains branching off
+ * tool_use nodes. The SDK parents the next user message to the last progress
+ * message, which causes the real conversation to end up on a dead branch.
+ * We exclude them from the DAG and use lineIndex fallback for any node
+ * whose parent was a progress message.
+ */
+function collectProgressUuids(messages: ClaudeSessionEntry[]): Set<string> {
+  const uuids = new Set<string>();
+  for (const msg of messages) {
+    if (msg.type === "progress" && "uuid" in msg && msg.uuid) {
+      uuids.add(msg.uuid);
+    }
+  }
+  return uuids;
+}
+
+/**
  * Walk from a tip to root, returning the count of conversation messages.
  * Only counts user/assistant messages, not progress or other internal types.
  * This ensures branch selection prefers actual conversation over progress updates.
@@ -59,6 +77,7 @@ const CONVERSATION_TYPES = new Set(["user", "assistant"]);
 function walkBranchLength(
   tipUuid: string,
   nodeMap: Map<string, DagNode>,
+  progressUuids: Set<string>,
 ): number {
   let conversationCount = 0;
   let currentUuid: string | null = tipUuid;
@@ -81,8 +100,15 @@ function walkBranchLength(
       nextUuid = logicalParent;
     }
 
-    // Fallback: if logicalParentUuid doesn't exist in this file, find previous node
-    if (nextUuid && !nodeMap.has(nextUuid) && logicalParent) {
+    // Fallback: if parent doesn't exist in the DAG, find previous node by file position.
+    // This covers two cases:
+    // 1. compact_boundary's logicalParentUuid references a message from a prior session
+    // 2. Parent was a progress message (excluded from DAG)
+    if (
+      nextUuid &&
+      !nodeMap.has(nextUuid) &&
+      (logicalParent || progressUuids.has(nextUuid))
+    ) {
       const fallback = findFallbackParentByLineIndex(
         node.lineIndex,
         nodeMap,
@@ -140,6 +166,7 @@ function getTipTimestamp(node: DagNode): string {
 export function buildDag(messages: ClaudeSessionEntry[]): DagResult {
   const nodeMap = new Map<string, DagNode>();
   const childrenMap = new Map<string | null, string[]>();
+  const progressUuids = collectProgressUuids(messages);
 
   // Build node map and children map
   for (let lineIndex = 0; lineIndex < messages.length; lineIndex++) {
@@ -149,6 +176,9 @@ export function buildDag(messages: ClaudeSessionEntry[]): DagResult {
     // Access uuid - only some entry types have it
     const uuid = "uuid" in raw ? raw.uuid : undefined;
     if (!uuid) continue; // Skip messages without uuid (internal types)
+
+    // Skip progress messages - they form long chains that break branch selection
+    if (raw.type === "progress") continue;
 
     // Access parentUuid - only some entry types have it
     const parentUuid = "parentUuid" in raw ? (raw.parentUuid ?? null) : null;
@@ -175,7 +205,7 @@ export function buildDag(messages: ClaudeSessionEntry[]): DagResult {
   for (const node of nodeMap.values()) {
     const children = childrenMap.get(node.uuid);
     if (!children || children.length === 0) {
-      const length = walkBranchLength(node.uuid, nodeMap);
+      const length = walkBranchLength(node.uuid, nodeMap, progressUuids);
       tipsWithLength.push({ node, length });
     }
   }
@@ -238,10 +268,16 @@ export function buildDag(messages: ClaudeSessionEntry[]): DagResult {
 
     let nextNode = nextUuid ? (nodeMap.get(nextUuid) ?? null) : null;
 
-    // Fallback: compact_boundary's logicalParentUuid references a message not in
-    // this file (e.g., from a continued/parent session). Find the most recent
-    // node before this boundary in file order to bridge the gap.
-    if (!nextNode && logicalParent && !nodeMap.has(logicalParent)) {
+    // Fallback: parent doesn't exist in the DAG. Two cases:
+    // 1. compact_boundary's logicalParentUuid references a message from a prior session
+    // 2. Parent was a progress message (excluded from DAG)
+    // Find the most recent node before this one in file order to bridge the gap.
+    if (
+      !nextNode &&
+      nextUuid &&
+      ((logicalParent && !nodeMap.has(logicalParent)) ||
+        progressUuids.has(nextUuid))
+    ) {
       nextNode = findFallbackParentByLineIndex(
         current.lineIndex,
         nodeMap,

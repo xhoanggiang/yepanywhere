@@ -954,3 +954,83 @@ describe("findSiblingToolResults", () => {
     expect(siblingBranches[0]?.completedToolUseIds).toContain("task-3-id");
   });
 });
+
+describe("progress messages", () => {
+  it("excludes progress chain and correctly parents subsequent messages", () => {
+    // Real-world scenario: Agent tool_use spawns subagent, progress messages
+    // chain off the tool_use node, then the SDK parents the next user message
+    // to the last progress message instead of the conversation continuation.
+    //
+    // Structure:
+    //   user-1 → assistant-agent-tooluse → user-agent-result → assistant-text → assistant-final
+    //                                    ↘ progress-1 → progress-2 → progress-3 → user-2 → assistant-reply
+    //
+    // Without the fix, active branch goes through progress chain, missing assistant-text and assistant-final.
+    const messages: RawSessionMessage[] = [
+      { type: "user", uuid: "u1", parentUuid: null },
+      {
+        type: "assistant",
+        uuid: "agent-tooluse",
+        parentUuid: "u1",
+        message: {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "agent-id", name: "Agent", input: {} }],
+        },
+      },
+      {
+        type: "user",
+        uuid: "agent-result",
+        parentUuid: "agent-tooluse",
+        message: {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "agent-id", content: "done" }],
+        },
+      },
+      { type: "assistant", uuid: "text-after-agent", parentUuid: "agent-result" },
+      { type: "assistant", uuid: "final-text", parentUuid: "text-after-agent" },
+      // Progress chain branches off agent-tooluse
+      { type: "progress", uuid: "p1", parentUuid: "agent-tooluse" },
+      { type: "progress", uuid: "p2", parentUuid: "p1" },
+      { type: "progress", uuid: "p3", parentUuid: "p2" },
+      // Next user message parents to last progress (SDK behavior)
+      { type: "user", uuid: "u2", parentUuid: "p3" },
+      { type: "assistant", uuid: "reply", parentUuid: "u2" },
+    ];
+
+    const result = buildDag(messages);
+
+    // Progress messages should NOT appear in the active branch
+    const uuids = result.activeBranch.map((n) => n.uuid);
+    expect(uuids).not.toContain("p1");
+    expect(uuids).not.toContain("p2");
+    expect(uuids).not.toContain("p3");
+
+    // The conversation after the agent result MUST be on the active branch
+    expect(uuids).toContain("text-after-agent");
+    expect(uuids).toContain("final-text");
+
+    // The new user message should also be on the active branch
+    expect(uuids).toContain("u2");
+    expect(uuids).toContain("reply");
+
+    // Tip should be the reply
+    expect(result.tip?.uuid).toBe("reply");
+  });
+
+  it("handles single progress message between conversation turns", () => {
+    // Simpler case: one progress message, not a long chain
+    const messages: RawSessionMessage[] = [
+      { type: "user", uuid: "u1", parentUuid: null },
+      { type: "assistant", uuid: "a1", parentUuid: "u1" },
+      { type: "progress", uuid: "p1", parentUuid: "a1" },
+      { type: "user", uuid: "u2", parentUuid: "p1" },
+      { type: "assistant", uuid: "a2", parentUuid: "u2" },
+    ];
+
+    const result = buildDag(messages);
+    const uuids = result.activeBranch.map((n) => n.uuid);
+
+    expect(uuids).toEqual(["u1", "a1", "u2", "a2"]);
+    expect(uuids).not.toContain("p1");
+  });
+});
