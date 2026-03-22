@@ -35,13 +35,7 @@ import {
   parseCodexToolArguments,
 } from "../codex/normalization.js";
 import type { ContentBlock, Message, Session } from "../supervisor/types.js";
-import {
-  buildDag,
-  collectAllToolResultIds,
-  findOrphanedToolUses,
-  findSiblingToolBranches,
-  findSiblingToolResults,
-} from "./dag.js";
+import { collectVisibleClaudeEntries } from "./claude-messages.js";
 import type { LoadedSession } from "./types.js";
 
 interface CodexToolUseConversion {
@@ -59,87 +53,12 @@ export function normalizeSession(loaded: LoadedSession): Session {
   switch (data.provider) {
     case "claude":
     case "claude-ollama": {
-      // Claude sessions are stored as raw messages in the session file.
-      // We need to build the DAG to find the active branch.
       const rawMessages = data.session.messages;
-
-      // Build DAG and get active branch (filters out dead branches)
-      const { activeBranch } = buildDag(rawMessages);
-
-      // Collect all tool_result IDs from the entire session (not just active branch)
-      // This handles parallel tool calls where results may be on sibling branches
-      const allToolResultIds = collectAllToolResultIds(rawMessages);
-
-      // Find tool_uses on active branch that have no matching tool_result anywhere
-      const orphanedToolUses = findOrphanedToolUses(
-        activeBranch,
-        allToolResultIds,
+      const { entries, orphanedToolUses } =
+        collectVisibleClaudeEntries(rawMessages);
+      const messages: Message[] = entries.map((raw, index) =>
+        convertClaudeMessage(raw, index, orphanedToolUses),
       );
-
-      // Find tool_result messages on sibling branches that match tool_uses on active branch
-      // These need to be included so the client can pair them with their tool_uses
-      const siblingToolResults = findSiblingToolResults(
-        activeBranch,
-        rawMessages,
-      );
-
-      // Find complete sibling tool branches (tool_use + tool_result pairs on dead branches)
-      // This handles the case where Claude spawns parallel tasks as chained messages
-      const siblingToolBranches = findSiblingToolBranches(
-        activeBranch,
-        rawMessages,
-      );
-
-      // Build a map of parentUuid -> sibling tool_results for efficient insertion
-      const siblingsByParent = new Map<string, Message[]>();
-      for (const sibling of siblingToolResults) {
-        const converted = convertClaudeMessage(
-          sibling.raw,
-          -1,
-          new Set<string>(),
-        );
-        const existing = siblingsByParent.get(sibling.parentUuid);
-        if (existing) {
-          existing.push(converted);
-        } else {
-          siblingsByParent.set(sibling.parentUuid, [converted]);
-        }
-      }
-
-      // Build a map of branchPoint -> sibling branch nodes for chained parallel tasks
-      const siblingBranchesByParent = new Map<string, Message[]>();
-      for (const branch of siblingToolBranches) {
-        const converted = branch.nodes.map((node) =>
-          convertClaudeMessage(node.raw, -1, new Set<string>()),
-        );
-        const existing = siblingBranchesByParent.get(branch.branchPoint);
-        if (existing) {
-          existing.push(...converted);
-        } else {
-          siblingBranchesByParent.set(branch.branchPoint, converted);
-        }
-      }
-
-      // Convert active branch to Message objects, inserting sibling branches after their parent
-      const messages: Message[] = [];
-      for (let i = 0; i < activeBranch.length; i++) {
-        const node = activeBranch[i];
-        if (!node) continue;
-        const msg = convertClaudeMessage(node.raw, i, orphanedToolUses);
-        messages.push(msg);
-
-        // Insert any sibling tool_results that have this node as their parent
-        const siblings = siblingsByParent.get(node.uuid);
-        if (siblings) {
-          messages.push(...siblings);
-        }
-
-        // Insert any sibling tool branches that branch from this node
-        const siblingBranchNodes = siblingBranchesByParent.get(node.uuid);
-        if (siblingBranchNodes) {
-          messages.push(...siblingBranchNodes);
-        }
-      }
 
       return {
         ...summary,

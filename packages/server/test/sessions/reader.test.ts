@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ClaudeSessionEntry, UrlProjectId } from "@yep-anywhere/shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { preprocessMessages } from "../../../client/src/lib/preprocessMessages.ts";
 import { normalizeSession } from "../../src/sessions/normalization.js";
 import {
   SessionReader,
@@ -485,6 +486,239 @@ describe("SessionReader", () => {
       expect(session?.messages[0]?.orphanedToolUseIds).toBeUndefined();
       expect(session?.messages[2]?.orphanedToolUseIds).toBeUndefined(); // tool-use-2 is now at index 2
     });
+
+    it("renders completed branch before later progress-resumed conversation", async () => {
+      const sessionId = "dag-progress-resume-order";
+      const jsonl = [
+        JSON.stringify({
+          type: "user",
+          uuid: "u1",
+          parentUuid: null,
+          message: { content: "test 123. hello." },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          uuid: "a1",
+          parentUuid: "u1",
+          message: {
+            content: [
+              { type: "text", text: "Hello! How can I help you today?" },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: "user",
+          uuid: "u2",
+          parentUuid: "a1",
+          message: {
+            content: "edit a sample file in the repo just for testing.",
+          },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          uuid: "thinking",
+          parentUuid: "u2",
+          message: {
+            content: [{ type: "thinking", thinking: "Let me think briefly." }],
+          },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          uuid: "read-msg",
+          parentUuid: "thinking",
+          message: {
+            content: [
+              {
+                type: "text",
+                text: "Let me find a small file to make a test edit on.",
+              },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          uuid: "read-tool",
+          parentUuid: "read-msg",
+          message: {
+            content: [
+              { type: "tool_use", id: "read-id", name: "Read", input: {} },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: "user",
+          uuid: "read-result",
+          parentUuid: "read-tool",
+          message: {
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "read-id",
+                content: "read done",
+              },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          uuid: "edit-msg",
+          parentUuid: "read-result",
+          message: {
+            content: [
+              { type: "tool_use", id: "edit-id", name: "Edit", input: {} },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: "user",
+          uuid: "edit-result",
+          parentUuid: "edit-msg",
+          message: {
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "edit-id",
+                content: "edit done",
+              },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          uuid: "edit-final",
+          parentUuid: "edit-result",
+          message: {
+            content: [
+              {
+                type: "text",
+                text: "Done — added a `<!-- test edit -->` comment on line 6 of `README.md`.",
+              },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: "progress",
+          uuid: "p1",
+          parentUuid: "read-tool",
+        }),
+        JSON.stringify({
+          type: "progress",
+          uuid: "p2",
+          parentUuid: "p1",
+        }),
+        JSON.stringify({
+          type: "user",
+          uuid: "thanks",
+          parentUuid: "p2",
+          message: { content: "very good. thank you." },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          uuid: "welcome",
+          parentUuid: "thanks",
+          message: { content: [{ type: "text", text: "You're welcome!" }] },
+        }),
+        JSON.stringify({
+          type: "user",
+          uuid: "launch",
+          parentUuid: "welcome",
+          message: {
+            content:
+              "please launch a subagent that will remove that test edit by editing it out.",
+          },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          uuid: "agent-msg",
+          parentUuid: "launch",
+          message: {
+            content: [
+              { type: "tool_use", id: "agent-id", name: "Agent", input: {} },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: "user",
+          uuid: "agent-result",
+          parentUuid: "agent-msg",
+          message: {
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "agent-id",
+                content: "agent done",
+              },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          uuid: "removed",
+          parentUuid: "agent-result",
+          message: {
+            content: [
+              {
+                type: "text",
+                text: "Done — the test edit has been removed. README.md is back to its original state.",
+              },
+            ],
+          },
+        }),
+      ].join("\n");
+      await writeFile(join(testDir, `${sessionId}.jsonl`), `${jsonl}\n`);
+
+      const loadedSession = await reader.getSession(
+        sessionId,
+        "test-project" as UrlProjectId,
+      );
+      const session = loadedSession ? normalizeSession(loadedSession) : null;
+      const renderItems = session ? preprocessMessages(session.messages) : [];
+
+      expect(session?.messages.map((message) => message.uuid)).toEqual([
+        "u1",
+        "a1",
+        "u2",
+        "thinking",
+        "read-msg",
+        "read-tool",
+        "read-result",
+        "edit-msg",
+        "edit-result",
+        "edit-final",
+        "thanks",
+        "welcome",
+        "launch",
+        "agent-msg",
+        "agent-result",
+        "removed",
+      ]);
+
+      expect(
+        renderItems.map((item) =>
+          item.type === "tool_call"
+            ? `${item.type}:${item.toolName}`
+            : item.type === "text"
+              ? `${item.type}:${item.text}`
+              : item.type === "user_prompt"
+                ? `${item.type}:${typeof item.content === "string" ? item.content : ""}`
+                : item.type,
+        ),
+      ).toEqual([
+        "user_prompt:test 123. hello.",
+        "text:Hello! How can I help you today?",
+        "user_prompt:edit a sample file in the repo just for testing.",
+        "thinking",
+        "text:Let me find a small file to make a test edit on.",
+        "tool_call:Read",
+        "tool_call:Edit",
+        "text:Done — added a `<!-- test edit -->` comment on line 6 of `README.md`.",
+        "user_prompt:very good. thank you.",
+        "text:You're welcome!",
+        "user_prompt:please launch a subagent that will remove that test edit by editing it out.",
+        "tool_call:Agent",
+        "text:Done — the test edit has been removed. README.md is back to its original state.",
+      ]);
+    });
   });
 
   describe("getAgentSession", () => {
@@ -595,6 +829,117 @@ describe("SessionReader", () => {
       // Should only have a, c, d (not b - dead branch)
       expect(result.messages).toHaveLength(3);
       expect(result.messages.map((m) => m.uuid)).toEqual(["a", "c", "d"]);
+      expect(result.status).toBe("completed");
+    });
+
+    it("includes completed sibling tool branches in agent sessions for reload rendering", async () => {
+      const jsonl = [
+        JSON.stringify({
+          type: "user",
+          uuid: "user-1",
+          parentUuid: null,
+          message: { content: "Apply the refactor." },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          uuid: "edit-1-msg",
+          parentUuid: "user-1",
+          message: {
+            content: [
+              {
+                type: "tool_use",
+                id: "edit-1",
+                name: "Edit",
+                input: {
+                  file_path: "src/a.ts",
+                  old_string: "a",
+                  new_string: "b",
+                },
+              },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          uuid: "edit-2-msg",
+          parentUuid: "edit-1-msg",
+          message: {
+            content: [
+              {
+                type: "tool_use",
+                id: "edit-2",
+                name: "Edit",
+                input: {
+                  file_path: "src/b.ts",
+                  old_string: "x",
+                  new_string: "y",
+                },
+              },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: "user",
+          uuid: "edit-1-result",
+          parentUuid: "edit-1-msg",
+          message: {
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "edit-1",
+                content: "File modified.",
+              },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: "user",
+          uuid: "edit-2-result",
+          parentUuid: "edit-2-msg",
+          message: {
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "edit-2",
+                content: "File modified.",
+              },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          uuid: "assistant-final",
+          parentUuid: "edit-1-result",
+          message: {
+            content: [{ type: "text", text: "Applied both edits." }],
+          },
+        }),
+        JSON.stringify({
+          type: "result",
+          uuid: "agent-result",
+          parentUuid: "assistant-final",
+        }),
+      ].join("\n");
+      await writeFile(join(testDir, "agent-render-branches.jsonl"), jsonl);
+
+      const result = await reader.getAgentSession("render-branches");
+
+      expect(result.messages.map((m) => m.uuid)).toEqual([
+        "user-1",
+        "edit-1-msg",
+        "edit-2-msg",
+        "edit-2-result",
+        "edit-1-result",
+        "assistant-final",
+        "agent-result",
+      ]);
+
+      const renderItems = preprocessMessages(result.messages);
+      const editCalls = renderItems.filter(
+        (item) => item.type === "tool_call" && item.toolName === "Edit",
+      );
+
+      expect(editCalls).toHaveLength(2);
       expect(result.status).toBe("completed");
     });
   });

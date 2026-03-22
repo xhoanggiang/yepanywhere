@@ -416,6 +416,8 @@ export function parseAgentResultFromText(
   const fullText = texts.join("\n");
   if (!fullText) return undefined;
 
+  const displayContent = extractAgentDisplayContent(block);
+
   // Extract agentId
   const agentIdMatch = fullText.match(/^agentId:\s*(\S+)/m);
   if (!agentIdMatch) return undefined;
@@ -424,6 +426,9 @@ export function parseAgentResultFromText(
     agentId: agentIdMatch[1],
     status: "completed",
   };
+  if (displayContent && displayContent.length > 0) {
+    result.content = displayContent;
+  }
 
   // Extract usage stats from <usage> block
   const usageMatch = fullText.match(/<usage>([\s\S]*?)<\/usage>/);
@@ -438,6 +443,46 @@ export function parseAgentResultFromText(
   }
 
   return result;
+}
+
+function stripAgentMetadata(text: string): string {
+  return text
+    .replace(/^agentId:\s*\S+.*$/gm, "")
+    .replace(/<usage>[\s\S]*?<\/usage>/g, "")
+    .trim();
+}
+
+function extractAgentDisplayContent(
+  block: ContentBlock,
+): ContentBlock[] | undefined {
+  if (typeof block.content === "string") {
+    const text = stripAgentMetadata(block.content);
+    return text ? [{ type: "text", text }] : undefined;
+  }
+
+  if (!Array.isArray(block.content)) {
+    return undefined;
+  }
+
+  const displayBlocks: ContentBlock[] = [];
+  for (const contentBlock of block.content) {
+    if (!contentBlock || typeof contentBlock !== "object") {
+      continue;
+    }
+
+    if (contentBlock.type === "text" && typeof contentBlock.text === "string") {
+      const text = stripAgentMetadata(contentBlock.text);
+      if (!text) {
+        continue;
+      }
+      displayBlocks.push({ ...contentBlock, text });
+      continue;
+    }
+
+    displayBlocks.push(contentBlock as ContentBlock);
+  }
+
+  return displayBlocks.length > 0 ? displayBlocks : undefined;
 }
 
 function attachToolResult(

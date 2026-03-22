@@ -30,7 +30,8 @@ import {
   isCompactBoundary,
   isConversationEntry,
 } from "@yep-anywhere/shared";
-import { buildDag, findOrphanedToolUses } from "./dag.js";
+import { collectVisibleClaudeEntries } from "./claude-messages.js";
+import { buildDag } from "./dag.js";
 
 export interface ClaudeSessionReaderOptions {
   sessionDir: string;
@@ -404,16 +405,13 @@ export class ClaudeSessionReader implements ISessionReader {
         }
       }
 
-      // Build DAG and get active branch (filters out dead branches)
-      const { activeBranch } = buildDag(rawMessages);
+      const { entries, orphanedToolUses } = collectVisibleClaudeEntries(
+        rawMessages,
+        { includeOrphans: false },
+      );
 
-      // Don't include orphan detection for agent sessions
-      // (agents are subprocesses, we don't know their lifecycle)
-      const orphanedToolUses = new Set<string>();
-
-      // Convert to Message objects
-      const messages: Message[] = activeBranch.map((node, index) =>
-        this.convertMessage(node.raw, index, orphanedToolUses),
+      const messages: Message[] = entries.map((raw, index) =>
+        this.convertMessage(raw, index, orphanedToolUses),
       );
 
       // Infer status from messages

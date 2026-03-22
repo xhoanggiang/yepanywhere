@@ -44,6 +44,75 @@ describe("preprocessMessages", () => {
     });
   });
 
+  it("preserves Agent tool summaries for rendering completed tasks", () => {
+    const messages: Message[] = [
+      {
+        id: "msg-1",
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "tool-1",
+            name: "Agent",
+            input: {
+              description: "Explore codebase for refactoring",
+              prompt: "Find cleanup opportunities",
+              subagent_type: "Explore",
+            },
+          },
+        ],
+        timestamp: "2024-01-01T00:00:00Z",
+      },
+      {
+        id: "msg-2",
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "tool-1",
+            content: [
+              {
+                type: "text",
+                text: "## Comprehensive Cleanup and Refactoring Opportunities Report",
+              },
+              {
+                type: "text",
+                text: "agentId: summary123\n<usage>total_tokens: 200\ntool_uses: 3\nduration_ms: 1000</usage>",
+              },
+            ],
+          },
+        ],
+        timestamp: "2024-01-01T00:00:01Z",
+      },
+    ];
+
+    const items = preprocessMessages(messages);
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      type: "tool_call",
+      id: "tool-1",
+      toolName: "Agent",
+      status: "complete",
+      toolResult: {
+        isError: false,
+        structured: {
+          agentId: "summary123",
+          status: "completed",
+          content: [
+            {
+              type: "text",
+              text: "## Comprehensive Cleanup and Refactoring Opportunities Report",
+            },
+          ],
+          totalTokens: 200,
+          totalToolUseCount: 3,
+          totalDurationMs: 1000,
+        },
+      },
+    });
+  });
+
   it("marks tool_use as pending when result not yet received", () => {
     const messages: Message[] = [
       {

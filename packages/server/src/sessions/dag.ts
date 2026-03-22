@@ -575,6 +575,12 @@ export function findSiblingToolBranches(
       }
     }
 
+    // Progress chains can bridge into the active branch while remaining excluded
+    // from it. Those are not sibling branches and would duplicate active content.
+    if (subtreeNodes.some((node) => activeBranchUuids.has(node.uuid))) {
+      continue;
+    }
+
     // Check if any tool_uses in this subtree have matching results
     const completedToolUseIds: string[] = [];
     for (const node of subtreeNodes) {

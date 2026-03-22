@@ -1041,4 +1041,126 @@ describe("progress messages", () => {
     expect(uuids).toEqual(["u1", "a1", "u2", "a2"]);
     expect(uuids).not.toContain("p1");
   });
+
+  it("does not duplicate a progress-resumed subtree as a sibling branch", () => {
+    const messages: RawSessionMessage[] = [
+      { type: "user", uuid: "u1", parentUuid: null },
+      { type: "assistant", uuid: "a1", parentUuid: "u1" },
+      { type: "user", uuid: "u2", parentUuid: "a1" },
+      { type: "assistant", uuid: "thinking", parentUuid: "u2" },
+      { type: "assistant", uuid: "read-msg", parentUuid: "thinking" },
+      {
+        type: "assistant",
+        uuid: "read-tool",
+        parentUuid: "read-msg",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "tool_use", id: "read-id", name: "Read", input: {} },
+          ],
+        },
+      },
+      {
+        type: "user",
+        uuid: "read-result",
+        parentUuid: "read-tool",
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "read-id",
+              content: "read done",
+            },
+          ],
+        },
+      },
+      {
+        type: "assistant",
+        uuid: "edit-msg",
+        parentUuid: "read-result",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "tool_use", id: "edit-id", name: "Edit", input: {} },
+          ],
+        },
+      },
+      {
+        type: "user",
+        uuid: "edit-result",
+        parentUuid: "edit-msg",
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "edit-id",
+              content: "edit done",
+            },
+          ],
+        },
+      },
+      { type: "assistant", uuid: "edit-final", parentUuid: "edit-result" },
+      { type: "progress", uuid: "p1", parentUuid: "read-tool" },
+      { type: "progress", uuid: "p2", parentUuid: "p1" },
+      { type: "user", uuid: "thanks", parentUuid: "p2" },
+      { type: "assistant", uuid: "welcome", parentUuid: "thanks" },
+      { type: "user", uuid: "launch", parentUuid: "welcome" },
+      {
+        type: "assistant",
+        uuid: "agent-msg",
+        parentUuid: "launch",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "tool_use", id: "agent-id", name: "Agent", input: {} },
+          ],
+        },
+      },
+      {
+        type: "user",
+        uuid: "agent-result",
+        parentUuid: "agent-msg",
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "agent-id",
+              content: "agent done",
+            },
+          ],
+        },
+      },
+      { type: "assistant", uuid: "removed", parentUuid: "agent-result" },
+    ];
+
+    const result = buildDag(messages);
+
+    expect(result.activeBranch.map((node) => node.uuid)).toEqual([
+      "u1",
+      "a1",
+      "u2",
+      "thinking",
+      "read-msg",
+      "read-tool",
+      "read-result",
+      "edit-msg",
+      "edit-result",
+      "edit-final",
+      "thanks",
+      "welcome",
+      "launch",
+      "agent-msg",
+      "agent-result",
+      "removed",
+    ]);
+
+    const siblingBranches = findSiblingToolBranches(
+      result.activeBranch,
+      messages,
+    );
+    expect(siblingBranches).toEqual([]);
+  });
 });

@@ -306,6 +306,128 @@ const CLAUDE_FIXTURE: ClaudeSessionEntry[] = [
   },
 ];
 
+const CLAUDE_EDIT_CHAIN_FIXTURE: ClaudeSessionEntry[] = [
+  {
+    type: "user",
+    uuid: "claude-edit-user-1",
+    parentUuid: null,
+    message: { role: "user", content: "Update the remote access docs." },
+  },
+  {
+    type: "assistant",
+    uuid: "claude-edit-1",
+    parentUuid: "claude-edit-user-1",
+    message: {
+      role: "assistant",
+      content: [
+        {
+          type: "tool_use",
+          id: "claude-edit-tool-1",
+          name: "Edit",
+          input: {
+            file_path: "/tmp/README.md",
+            old_string: "Old README paragraph",
+            new_string: "Updated README paragraph",
+          },
+        },
+      ],
+    },
+  },
+  {
+    type: "assistant",
+    uuid: "claude-edit-2",
+    parentUuid: "claude-edit-1",
+    message: {
+      role: "assistant",
+      content: [
+        {
+          type: "tool_use",
+          id: "claude-edit-tool-2",
+          name: "Edit",
+          input: {
+            file_path: "/tmp/remote-access.md",
+            old_string: "Old relay section",
+            new_string: "Updated relay section",
+          },
+        },
+      ],
+    },
+  },
+  {
+    type: "user",
+    uuid: "claude-edit-result-1",
+    parentUuid: "claude-edit-1",
+    message: {
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "claude-edit-tool-1",
+          content: "README updated successfully.",
+        },
+      ],
+    },
+    toolUseResult: {
+      filePath: "/tmp/README.md",
+      oldString: "Old README paragraph",
+      newString: "Updated README paragraph",
+      originalFile: "Old README paragraph",
+      structuredPatch: [
+        {
+          oldStart: 1,
+          oldLines: 1,
+          newStart: 1,
+          newLines: 1,
+          lines: ["-Old README paragraph", "+Updated README paragraph"],
+        },
+      ],
+      userModified: false,
+      replaceAll: false,
+    },
+  },
+  {
+    type: "user",
+    uuid: "claude-edit-result-2",
+    parentUuid: "claude-edit-2",
+    message: {
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "claude-edit-tool-2",
+          content: "Remote access doc updated successfully.",
+        },
+      ],
+    },
+    toolUseResult: {
+      filePath: "/tmp/remote-access.md",
+      oldString: "Old relay section",
+      newString: "Updated relay section",
+      originalFile: "Old relay section",
+      structuredPatch: [
+        {
+          oldStart: 1,
+          oldLines: 1,
+          newStart: 1,
+          newLines: 1,
+          lines: ["-Old relay section", "+Updated relay section"],
+        },
+      ],
+      userModified: false,
+      replaceAll: false,
+    },
+  },
+  {
+    type: "assistant",
+    uuid: "claude-edit-final",
+    parentUuid: "claude-edit-result-2",
+    message: {
+      role: "assistant",
+      content: "Done. Updated both files.",
+    },
+  },
+];
+
 describe("Render Parity Harness", () => {
   it("keeps Codex stream and persisted rendering equivalent", async () => {
     const persisted = await runPersistedPipeline(
@@ -384,5 +506,29 @@ describe("Render Parity Harness", () => {
         (item) => item.type === "text" && item.hasAugmentHtml === true,
       ),
     ).toBe(true);
+  });
+
+  it("keeps chained Claude Edit branches visible after persisted reload", async () => {
+    const persisted = await runPersistedPipeline(
+      buildLoadedClaudeSession(CLAUDE_EDIT_CHAIN_FIXTURE),
+    );
+    const stream = await runStreamPipeline(
+      CLAUDE_EDIT_CHAIN_FIXTURE as unknown as Array<Record<string, unknown>>,
+    );
+
+    assertRenderParity(
+      "claude-edit-chain",
+      persisted.renderItems,
+      stream.renderItems,
+    );
+
+    const comparable = normalizeRenderItemsForComparison(
+      persisted.renderItems,
+    ) as Array<Record<string, unknown>>;
+    const editCalls = comparable.filter(
+      (item) => item.type === "tool_call" && item.toolName === "Edit",
+    );
+
+    expect(editCalls).toHaveLength(2);
   });
 });

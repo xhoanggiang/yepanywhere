@@ -101,6 +101,34 @@ describe("parseAgentResultFromText", () => {
     });
   });
 
+  it("preserves human-readable agent summary content", () => {
+    const result = parseAgentResultFromText(
+      block([
+        {
+          type: "text",
+          text: "## Comprehensive Cleanup and Refactoring Opportunities Report",
+        },
+        {
+          type: "text",
+          text: "agentId: summary123 (use SendMessage to continue)\n<usage>total_tokens: 200\ntool_uses: 3\nduration_ms: 1000</usage>",
+        },
+      ]),
+    );
+    expect(result).toEqual({
+      agentId: "summary123",
+      status: "completed",
+      content: [
+        {
+          type: "text",
+          text: "## Comprehensive Cleanup and Refactoring Opportunities Report",
+        },
+      ],
+      totalTokens: 200,
+      totalToolUseCount: 3,
+      totalDurationMs: 1000,
+    });
+  });
+
   it("ignores non-text content blocks", () => {
     const result = parseAgentResultFromText(
       block([
