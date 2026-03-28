@@ -19,6 +19,34 @@ interface ReadResultWithAugment extends ReadResult {
   _highlightedLanguage?: string;
   _highlightedTruncated?: boolean;
   _renderedMarkdownHtml?: string;
+  session_id?: string | number;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function getReadSessionId(result: unknown): string | number | undefined {
+  if (!isRecord(result)) {
+    return undefined;
+  }
+  const sessionId = result.session_id;
+  if (typeof sessionId === "string" || typeof sessionId === "number") {
+    return sessionId;
+  }
+  return undefined;
+}
+
+function isPtyHandoffTextRead(result: ReadResultWithAugment | undefined): boolean {
+  if (!result || result.type !== "text") {
+    return false;
+  }
+  const sessionId = getReadSessionId(result);
+  if (sessionId === undefined) {
+    return false;
+  }
+  const file = result.file as TextFile | undefined;
+  return !!file && file.content.length === 0;
 }
 
 /**
@@ -168,15 +196,27 @@ function TextFileResult({
   highlightedHtml,
   highlightedTruncated,
   renderedMarkdownHtml,
+  isPtyHandoff = false,
 }: {
   file: TextFile;
   highlightedHtml?: string;
   highlightedTruncated?: boolean;
   renderedMarkdownHtml?: string;
+  isPtyHandoff?: boolean;
 }) {
   const [showModal, setShowModal] = useState(false);
   const fileName = getFileName(file.filePath);
   const showRange = file.startLine > 1 || file.numLines < file.totalLines;
+
+  if (isPtyHandoff) {
+    return (
+      <div className="read-text-result">
+        <span className="file-path">{fileName}</span>
+        {" "}
+        <span className="file-line-count">continues in Shell</span>
+      </div>
+    );
+  }
 
   return (
     <>
@@ -362,6 +402,7 @@ function ReadToolResult({
         highlightedHtml={result._highlightedContentHtml}
         highlightedTruncated={result._highlightedTruncated}
         renderedMarkdownHtml={result._renderedMarkdownHtml}
+        isPtyHandoff={isPtyHandoffTextRead(result)}
       />
     </>
   );
@@ -466,6 +507,17 @@ function ReadInteractiveSummary({
   }
 
   const file = result.file as TextFile;
+  const isPtyHandoff = isPtyHandoffTextRead(result);
+
+  if (isPtyHandoff) {
+    return (
+      <span>
+        {fileName}
+        {" "}
+        <span className="file-line-count-inline">continues in Shell</span>
+      </span>
+    );
+  }
 
   return (
     <>
@@ -523,8 +575,9 @@ export const readRenderer: ToolRenderer<ReadInput, ReadResult> = {
   getResultSummary(result, isError, input?) {
     if (isError && input) return getFileName((input as ReadInput).file_path);
     if (isError) return "Error";
-    const r = result as ReadResult;
+    const r = result as ReadResultWithAugment;
     if (!r?.file) return "Reading...";
+    if (isPtyHandoffTextRead(r)) return "continues in Shell";
     if (r.type === "pdf") return "PDF";
     if (r.type === "image") return "Image";
     return getFileName((r.file as TextFile).filePath);

@@ -1,3 +1,5 @@
+import { useState } from "react";
+import { Modal } from "../../ui/Modal";
 import type { ToolRenderer, WriteStdinInput, WriteStdinResult } from "./types";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -164,6 +166,62 @@ function parseResultEnvelope(text: string): {
   };
 }
 
+function countContentLines(content: string): number {
+  if (content.length === 0) {
+    return 0;
+  }
+  return content.split("\n").filter(Boolean).length;
+}
+
+function ReadViaPtyFile({
+  filePath,
+  output,
+  inline = false,
+}: {
+  filePath: string;
+  output: string;
+  inline?: boolean;
+}) {
+  const [showModal, setShowModal] = useState(false);
+  const fileName = getFileName(filePath);
+  const lines = output.split("\n");
+  const lineCount = countContentLines(output);
+  const buttonClass = inline ? "file-link-inline" : "file-link-button";
+  const lineCountClass = inline ? "file-line-count-inline" : "file-line-count";
+  const wrapperClass = inline ? undefined : "read-text-result";
+
+  return (
+    <>
+      <div className={wrapperClass}>
+        <button
+          type="button"
+          className={buttonClass}
+          onClick={() => setShowModal(true)}
+        >
+          {fileName}
+          <span className={lineCountClass}>{lineCount} lines</span>
+        </button>
+      </div>
+      {showModal && (
+        <Modal title={<span className="file-path">{fileName}</span>} onClose={() => setShowModal(false)}>
+          <div className="file-content-modal">
+            <div className="file-content-with-lines">
+              <div className="line-numbers">
+                {lines.map((_, i) => (
+                  <div key={`ln-${i + 1}`}>{i + 1}</div>
+                ))}
+              </div>
+              <pre className="line-content">
+                <code>{output}</code>
+              </pre>
+            </div>
+          </div>
+        </Modal>
+      )}
+    </>
+  );
+}
+
 export const writeStdinRenderer: ToolRenderer<
   WriteStdinInput,
   WriteStdinResult
@@ -195,9 +253,11 @@ export const writeStdinRenderer: ToolRenderer<
     );
   },
 
-  renderToolResult(result, isError, _context) {
+  renderToolResult(result, isError, _context, input) {
     const text = getResultText(result);
     const parsed = parseResultEnvelope(text);
+    const linkedToolName = getLinkedToolName(input);
+    const linkedFilePath = getLinkedFilePath(input);
 
     if (!parsed.output.trim()) {
       if (parsed.exitCode !== undefined) {
@@ -206,6 +266,10 @@ export const writeStdinRenderer: ToolRenderer<
         );
       }
       return <div className="bash-empty">No output</div>;
+    }
+
+    if (linkedToolName === "Read" && linkedFilePath) {
+      return <ReadViaPtyFile filePath={linkedFilePath} output={parsed.output} />;
     }
 
     return (
@@ -255,5 +319,25 @@ export const writeStdinRenderer: ToolRenderer<
 
     const lineCount = parsed.output.split("\n").filter(Boolean).length;
     return `${lineCount} lines`;
+  },
+
+  renderInteractiveSummary(input, result, isError, _context) {
+    if (isError) {
+      return null;
+    }
+
+    const linkedToolName = getLinkedToolName(input);
+    const linkedFilePath = getLinkedFilePath(input);
+    if (linkedToolName !== "Read" || !linkedFilePath) {
+      return null;
+    }
+
+    const text = getResultText(result);
+    const parsed = parseResultEnvelope(text);
+    if (!parsed.output.trim()) {
+      return null;
+    }
+
+    return <ReadViaPtyFile filePath={linkedFilePath} output={parsed.output} inline />;
   },
 };

@@ -25,19 +25,67 @@ export const ToolCallRow = memo(function ToolCallRow({
   status,
   sessionProvider,
 }: Props) {
+  // Create a minimal render context for tool renderers
+  const renderContext: RenderContext = useMemo(
+    () => ({
+      isStreaming: status === "pending",
+      theme: "dark",
+      toolUseId: id,
+      provider: sessionProvider,
+    }),
+    [status, id, sessionProvider],
+  );
+
+  // Get structured result for interactive summary
+  const structuredResult = toolResult?.structured ?? toolResult?.content;
+
   // Check if this tool renders inline (bypasses entire tool-row structure)
   const hasInlineRenderer = toolRegistry.hasInlineRenderer(toolName);
-  // Check if this tool has interactive summary (no expand/collapse)
-  const hasInteractiveSummary = toolRegistry.hasInteractiveSummary(toolName);
   const suppressCollapsedPreview = shouldSuppressBashCollapsedPreview(
     toolName,
     toolInput,
     sessionProvider,
     status,
   );
-  // Check if this tool has a collapsed preview
+
+  const interactiveSummaryContent = useMemo(() => {
+    if (status !== "complete") {
+      return null;
+    }
+    return toolRegistry.renderInteractiveSummary(
+      toolName,
+      toolInput,
+      structuredResult,
+      toolResult?.isError ?? false,
+      renderContext,
+    );
+  }, [status, toolName, toolInput, structuredResult, toolResult, renderContext]);
+
+  const hasInteractiveSummary =
+    interactiveSummaryContent !== null && interactiveSummaryContent !== undefined && interactiveSummaryContent !== false;
+
+  const collapsedPreviewContent = useMemo(() => {
+    if (suppressCollapsedPreview) {
+      return null;
+    }
+    return toolRegistry.renderCollapsedPreview(
+      toolName,
+      toolInput,
+      structuredResult,
+      toolResult?.isError ?? false,
+      renderContext,
+    );
+  }, [
+    suppressCollapsedPreview,
+    toolName,
+    toolInput,
+    structuredResult,
+    toolResult,
+    renderContext,
+  ]);
+
   const hasCollapsedPreview =
-    toolRegistry.hasCollapsedPreview(toolName) && !suppressCollapsedPreview;
+    collapsedPreviewContent !== null && collapsedPreviewContent !== undefined && collapsedPreviewContent !== false;
   const hideSummaryWhenPreviewVisible =
     toolName === "Bash" &&
     status === "pending" &&
@@ -60,20 +108,6 @@ export const ToolCallRow = memo(function ToolCallRow({
       setExpanded(!expanded);
     }
   };
-
-  // Create a minimal render context for tool renderers
-  const renderContext: RenderContext = useMemo(
-    () => ({
-      isStreaming: status === "pending",
-      theme: "dark",
-      toolUseId: id,
-      provider: sessionProvider,
-    }),
-    [status, id, sessionProvider],
-  );
-
-  // Get structured result for interactive summary
-  const structuredResult = toolResult?.structured ?? toolResult?.content;
 
   // Inline renderers bypass the entire tool-row structure
   if (hasInlineRenderer) {
@@ -123,13 +157,7 @@ export const ToolCallRow = memo(function ToolCallRow({
 
         {hasInteractiveSummary && status === "complete" ? (
           <span className="tool-summary interactive-summary">
-            {toolRegistry.renderInteractiveSummary(
-              toolName,
-              toolInput,
-              structuredResult,
-              toolResult?.isError ?? false,
-              renderContext,
-            )}
+            {interactiveSummaryContent}
           </span>
         ) : !hideSummaryWhenPreviewVisible ? (
           <span className="tool-summary">
@@ -149,15 +177,7 @@ export const ToolCallRow = memo(function ToolCallRow({
 
       {/* Collapsed preview - shown when tool supports it (non-expandable) */}
       {hasCollapsedPreview && (
-        <div className="tool-row-collapsed-preview">
-          {toolRegistry.renderCollapsedPreview(
-            toolName,
-            toolInput,
-            structuredResult,
-            toolResult?.isError ?? false,
-            renderContext,
-          )}
-        </div>
+        <div className="tool-row-collapsed-preview">{collapsedPreviewContent}</div>
       )}
 
       {expanded && !isNonExpandable && (

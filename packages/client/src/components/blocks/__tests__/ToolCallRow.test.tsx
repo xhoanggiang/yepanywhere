@@ -23,4 +23,50 @@ describe("ToolCallRow", () => {
     expect(container.querySelector(".tool-row-collapsed-preview")).toBeNull();
     expect(container.querySelector(".tool-use-expanded")).toBeNull();
   });
+
+  it("shows PTY-backed read shell rows inline without requiring expansion", () => {
+    const { container } = render(
+      <ToolCallRow
+        id="tool-pty-read"
+        toolName="WriteStdin"
+        toolInput={{
+          session_id: 37863,
+          chars: "",
+          linked_tool_name: "Read",
+          linked_file_path: "packages/client/src/hooks/useGlobalSessions.ts",
+        }}
+        toolResult={{
+          content:
+            "Chunk ID: ff710e\nWall time: 0.0518 seconds\nProcess exited with code 0\nOutput:\nline 1\nline 2\n",
+          isError: false,
+        }}
+        status="complete"
+      />
+    );
+
+    expect(screen.getByText("Shell")).toBeDefined();
+    expect(
+      screen.getByRole("button", { name: /useGlobalSessions\.ts/i }),
+    ).toBeDefined();
+    expect(screen.getByText(/2 lines/)).toBeDefined();
+    expect(container.querySelector(".expand-chevron")).toBeNull();
+  });
+
+  it("keeps generic shell rows expandable when no inline PTY summary applies", () => {
+    const { container } = render(
+      <ToolCallRow
+        id="tool-pty-generic"
+        toolName="WriteStdin"
+        toolInput={{ session_id: 37863, chars: "" }}
+        toolResult={{
+          content:
+            "Chunk ID: ff710e\nWall time: 0.0518 seconds\nProcess exited with code 0\nOutput:\nline 1\nline 2\n",
+          isError: false,
+        }}
+        status="complete"
+      />
+    );
+
+    expect(container.querySelector(".expand-chevron")).not.toBeNull();
+  });
 });

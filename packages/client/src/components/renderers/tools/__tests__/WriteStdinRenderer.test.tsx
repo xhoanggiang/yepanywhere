@@ -1,6 +1,21 @@
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { writeStdinRenderer } from "../WriteStdinRenderer";
+
+vi.mock("../../../ui/Modal", () => ({
+  Modal: ({
+    title,
+    children,
+  }: {
+    title: React.ReactNode;
+    children: React.ReactNode;
+  }) => (
+    <div>
+      <div>{title}</div>
+      <div>{children}</div>
+    </div>
+  ),
+}));
 
 const renderContext = {
   isStreaming: false,
@@ -109,5 +124,31 @@ describe("WriteStdinRenderer", () => {
     expect(screen.queryByText(/Wall time: 0.0518 seconds/)).toBeNull();
     expect(screen.getByText(/line 1/)).toBeDefined();
     expect(screen.getByText(/line 2/)).toBeDefined();
+  });
+
+  it("renders PTY-backed read output as a file modal opener", () => {
+    const { container } = render(
+      <div>
+        {writeStdinRenderer.renderToolResult(
+          "Chunk ID: ff710e\nWall time: 0.0518 seconds\nProcess exited with code 0\nOutput:\nline 1\nline 2\n",
+          false,
+          renderContext,
+          {
+            session_id: 37863,
+            linked_tool_name: "Read",
+            linked_file_path: "packages/client/src/hooks/useGlobalSessions.ts",
+          },
+        )}
+      </div>,
+    );
+
+    const button = screen.getByRole("button", { name: /useGlobalSessions\.ts/i });
+    expect(button).toBeDefined();
+    expect(screen.queryByText(/^line 1$/)).toBeNull();
+
+    fireEvent.click(button);
+
+    const modalCode = container.querySelector(".file-content-modal .line-content code");
+    expect(modalCode?.textContent).toContain("line 1\nline 2");
   });
 });
