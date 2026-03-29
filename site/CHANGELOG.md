@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [site-v1.5.27] - 2026-03-29
+
+### Added
+- Centralized cross-provider session listing
+- Session summary caching for Gemini and Codex providers
+
+### Fixed
+- Fix streaming edit patch filenames
+- Improve PTY and Codex PTY tool rendering
+- Fix mixed-provider session resolution and titles
+- Preserve Claude sibling ordering on reload
+- Stabilize session replay and queued prompt rendering
+- Detect Codex CLI from desktop app sandbox-bin location
+
 ## [site-v1.5.26] - 2026-03-27
 
 ### Added

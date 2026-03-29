@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.19] - 2026-03-29
+
+### Added
+- Centralized cross-provider session listing
+- Session summary caching for Gemini and Codex providers
+- Safe HOME guards for dev and test entrypoints
+
+### Fixed
+- Fix streaming edit patch filenames
+- Improve PTY and Codex PTY tool rendering
+- Fix mixed-provider session resolution and titles
+- Preserve Claude sibling ordering on reload
+- Stabilize session replay and queued prompt rendering
+- Detect Codex CLI from desktop app sandbox-bin location
+
 ## [0.4.18] - 2026-03-27
 
 ### Added
